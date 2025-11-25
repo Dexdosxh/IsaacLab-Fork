@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -8,10 +8,9 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
-import omni.isaac.lab.utils.math as math_utils
-from omni.isaac.lab.assets import Articulation, RigidObject
-from omni.isaac.lab.managers import SceneEntityCfg
-from omni.isaac.core.utils.torch.rotations import normalize_angle
+import isaaclab.utils.math as math_utils
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
     from omni.isaac.lab.envs import ManagerBasedEnv
@@ -22,8 +21,8 @@ def bad_heading(
 ) -> torch.Tensor:
     """Terminate when deviating too much from heading forward."""
     asset: Articulation = env.scene[asset_cfg.name]
-    heading_vec = math_utils.quat_rotate(asset.data.root_quat_w, asset.data.FORWARD_VEC_B)
-    heading_vec_pelvis = math_utils.quat_rotate(asset.data.body_quat_w[:,5], asset.data.FORWARD_VEC_B)
+    heading_vec = math_utils.quat_apply(asset.data.root_quat_w, asset.data.FORWARD_VEC_B)
+    heading_vec_pelvis = math_utils.quat_apply(asset.data.body_quat_w[:,5], asset.data.FORWARD_VEC_B)
     return torch.logical_or(heading_vec[:,0] < minimum_heading_proj, heading_vec_pelvis[:,0] < minimum_heading_proj)
 
 def bad_pelvis_height(
@@ -58,6 +57,6 @@ def bad_feet_heading(
     asset: Articulation = env.scene[asset_cfg.name]
     ind_left_foot = asset.data.body_names.index("left_foot")
     ind_right_foot = asset.data.body_names.index("right_foot")
-    heading_vec_left_foot = math_utils.quat_rotate(asset.data.body_quat_w[:,ind_left_foot], asset.data.FORWARD_VEC_B)
-    heading_vec_right_foot = math_utils.quat_rotate(asset.data.body_quat_w[:,ind_right_foot], asset.data.FORWARD_VEC_B)
+    heading_vec_left_foot = math_utils.quat_apply(asset.data.body_quat_w[:,ind_left_foot], asset.data.FORWARD_VEC_B)
+    heading_vec_right_foot = math_utils.quat_apply(asset.data.body_quat_w[:,ind_right_foot], asset.data.FORWARD_VEC_B)
     return torch.logical_or(heading_vec_left_foot[:,0] < minimum_heading_proj, heading_vec_right_foot[:,0] < minimum_heading_proj)

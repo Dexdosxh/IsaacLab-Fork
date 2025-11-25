@@ -16,8 +16,8 @@ class CartwheelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     gage_init_std = 0.0
     gage_change_rate = 0.0
     num_steps_per_env = 32
-    max_iterations = 10000
-    save_interval = 1000
+    max_iterations = 500 # 10000
+    save_interval = 100 # 1000
     experiment_name = "cartwheel"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(

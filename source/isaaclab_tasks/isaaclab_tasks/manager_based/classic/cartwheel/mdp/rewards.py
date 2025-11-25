@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -8,16 +8,15 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
-import omni.isaac.lab.utils.math as math_utils
-import omni.isaac.lab.utils.string as string_utils
-from omni.isaac.lab.assets import Articulation, RigidObject
-from omni.isaac.lab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
+import isaaclab.utils.math as math_utils
+import isaaclab.utils.string as string_utils
+from isaaclab.assets import Articulation
+from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 
 from . import observations as obs
-from omni.isaac.core.utils.torch.rotations import normalize_angle
 
 if TYPE_CHECKING:
-    from omni.isaac.lab.envs import ManagerBasedRLEnv
+    from isaaclab.envs import ManagerBasedRLEnv
 
 
 def upright_posture_bonus(
@@ -49,7 +48,7 @@ def heading_forward(
 ) -> torch.Tensor:
     """reward for heading forward."""
     asset: Articulation = env.scene[asset_cfg.name]
-    heading_vec = math_utils.quat_rotate(asset.data.root_quat_w, asset.data.FORWARD_VEC_B)
+    heading_vec = math_utils.quat_apply(asset.data.root_quat_w, asset.data.FORWARD_VEC_B)
     return heading_vec[:,0]
     # heading_vec_torso = math_utils.quat_rotate(asset.data.root_quat_w, asset.data.FORWARD_VEC_B)
     # # yz_norm_torso = torch.norm(heading_vec_torso[:,1:], dim=-1)
@@ -131,7 +130,11 @@ class joint_limits_penalty_ratio(ManagerTermBase):
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
 
     def __call__(
-        self, env: ManagerBasedRLEnv, threshold: float, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg
+        self, 
+        env: ManagerBasedRLEnv, 
+        threshold: float, 
+        gear_ratio: dict[str, float], 
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
     ) -> torch.Tensor:
         # extract the used quantities (to enable type-hinting)
         asset: Articulation = env.scene[asset_cfg.name]
@@ -166,7 +169,12 @@ class power_consumption(ManagerTermBase):
         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
 
-    def __call__(self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    def __call__(
+        self, 
+        env: ManagerBasedRLEnv, 
+        gear_ratio: dict[str, float], 
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
         # extract the used quantities (to enable type-hinting)
         asset: Articulation = env.scene[asset_cfg.name]
         # return power = torque * velocity (here actions: joint torques)

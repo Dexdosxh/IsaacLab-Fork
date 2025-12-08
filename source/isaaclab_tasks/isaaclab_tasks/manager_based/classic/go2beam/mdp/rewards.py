@@ -96,7 +96,8 @@ class joint_limits_penalty_ratio(ManagerTermBase):
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
 
     def __call__(
-        self, env: ManagerBasedRLEnv, threshold: float, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg
+        self, env: ManagerBasedRLEnv, threshold: float, gear_ratio: dict[str, float], 
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
     ) -> torch.Tensor:
         # extract the used quantities (to enable type-hinting)
         asset: Articulation = env.scene[asset_cfg.name]
@@ -131,7 +132,8 @@ class power_consumption(ManagerTermBase):
         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
 
-    def __call__(self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    def __call__(self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], 
+                 asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
         # extract the used quantities (to enable type-hinting)
         asset: Articulation = env.scene[asset_cfg.name]
         # return power = torque * velocity (here actions: joint torques)
@@ -198,8 +200,10 @@ def keep_orientation(
 ) -> torch.Tensor:
     """reward for keeping close to target orientation."""
     asset: Articulation = env.scene[asset_cfg.name]
-    quat_diff = math_utils.quat_mul(target_quat.to(env.device).repeat(env.num_envs, 1), 
-                                    asset.data.root_quat_w)
+    target_quat = torch.tensor(target_quat, device=env.device)
+    target_quat = math_utils.quat_inv(target_quat)
+    target_quat = target_quat.unsqueeze(0).repeat(env.num_envs, 1)
+    quat_diff = math_utils.quat_mul(target_quat, asset.data.root_quat_w)
     eulers_diff = normalize_angle(torch.stack(math_utils.euler_xyz_from_quat(quat_diff), dim=1))
     return torch.exp(-torch.norm(eulers_diff, dim=-1)*2)
 

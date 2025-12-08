@@ -19,7 +19,7 @@ from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.classic.go2beam.mdp as mdp
 from isaaclab.assets import RigidObjectCfg
-from isaaclab_assets.unitree import UNITREE_GO2_CFG  # isort: skip
+from isaaclab_assets.robots import UNITREE_GO2_CFG  # isort: skip
 import math
 import torch
 import isaaclab.utils.math as math_utils
@@ -183,7 +183,8 @@ class RewardsCfg:
     # (2) Stay alive bonus
     rew_alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # (3) Reward for maintaining desired orientation
-    rew_orientation = RewTerm(func=mdp.keep_orientation, weight=1.0, params={"target_quat": math_utils.quat_inv(torch.tensor(_beam_quat)).unsqueeze(0)})
+    rew_orientation = RewTerm(func=mdp.keep_orientation, weight=1.0, 
+                              params={"target_quat": (0.9848078, 0.0, -0.1736482, 0.0)})
 
     # (5) Penalty for large action commands
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01*0.5)
@@ -216,8 +217,8 @@ class TerminationsCfg:
     # (2) Terminate if the robot falls
     torso_height = DoneTerm(func=mdp.fall_off_beam, params={"minimum_height": 0.05+0.26, "slope_func": slope_func})
     # (3) Terminate if the robot deviates too much from target orientation
-    torso_orientation = DoneTerm(func=mdp.bad_orientation_quat, params={"limit_angle_diff": math.pi/6,
-                                                                        "target_quat": math_utils.quat_inv(torch.tensor(_beam_quat)).unsqueeze(0)} )
+    torso_orientation = DoneTerm(func=mdp.bad_orientation_quat, 
+                                 params={"limit_angle_diff": math.pi/6,"target_quat": (0.9848078, 0.0, -0.1736482, 0.0)})
     # (5) Terminate if any foot is off the beam
     feet_off = DoneTerm(func=mdp.feet_off, params={"slope_func":slope_func})
 

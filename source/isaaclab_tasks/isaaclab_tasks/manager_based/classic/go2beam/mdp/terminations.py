@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
-from rewards import normalize_angle
 import isaaclab.utils.math as math_utils
 
 if TYPE_CHECKING:
@@ -57,8 +56,10 @@ def bad_orientation_quat(
     """
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
-    quat_diff = math_utils.quat_mul(target_quat.to(env.device).repeat(env.num_envs, 1), 
-                                    asset.data.root_quat_w)
+    target_quat = torch.tensor(target_quat, device=env.device)
+    target_quat = math_utils.quat_inv(target_quat)
+    target_quat = target_quat.unsqueeze(0).repeat(env.num_envs, 1)
+    quat_diff = math_utils.quat_mul(target_quat, asset.data.root_quat_w)
     eulers_diff = normalize_angle(torch.stack(math_utils.euler_xyz_from_quat(quat_diff), dim=1))
     return torch.norm(eulers_diff, dim=-1) > limit_angle_diff
 
@@ -97,3 +98,13 @@ def feet_off(
 
     return  result_FL | result_FR | result_RL | result_RR
 
+##################
+# Helper method #
+##################
+
+def normalize_angle(x: torch.Tensor) -> torch.Tensor:
+    """ 
+    Normalize angles to [-pi, pi]. Self written version of 
+    omni.isaac.core.utils.torch.rotations 'normalize_angle'.
+    """
+    return torch.atan2(torch.sin(x), torch.cos(x))

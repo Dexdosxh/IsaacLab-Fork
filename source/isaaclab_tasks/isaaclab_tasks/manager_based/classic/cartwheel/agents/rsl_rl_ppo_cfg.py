@@ -12,6 +12,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class CartwheelPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     rewards_expect = {
         "spin": 2.0,
+
+        
     }
     gage_init_std = 1.0
     gage_change_rate = 0.0

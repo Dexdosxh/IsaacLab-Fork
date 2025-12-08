@@ -184,8 +184,7 @@ def keep_orientation(
     target_quat = torch.tensor(target_quat, device=env.device)
     target_quat = math_utils.quat_inv(target_quat)
     target_quat = target_quat.unsqueeze(0).repeat(env.num_envs, 1)
-    quat_diff = math_utils.quat_mul(target_quat, 
-                                    asset.data.root_quat_w)
+    quat_diff = math_utils.quat_mul(target_quat, asset.data.root_quat_w)
     eulers_diff = normalize_angle(torch.stack(math_utils.euler_xyz_from_quat(quat_diff), dim=1))
     eulers_diff[:,1] = eulers_diff[:,1] * 2 # do not need to keep pitch exactly
     return torch.exp(-torch.norm(eulers_diff, dim=-1))

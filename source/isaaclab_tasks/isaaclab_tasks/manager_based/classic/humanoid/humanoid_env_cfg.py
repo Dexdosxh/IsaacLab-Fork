@@ -181,6 +181,9 @@ class RewardsCfg:
         },
     )
 
+    # (8) Penalty for moving in y direction
+    cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
+
 
 @configclass
 class TerminationsCfg:

@@ -141,3 +141,10 @@ class power_consumption(ManagerTermBase):
         asset: Articulation = env.scene[asset_cfg.name]
         # return power = torque * velocity (here actions: joint torques)
         return torch.sum(torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), dim=-1)
+    
+def off_track(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """penalty for going off track."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.abs(asset.data.root_vel_w[:, 1])

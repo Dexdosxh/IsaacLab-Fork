@@ -10,9 +10,14 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class HumanoidPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    rewards_expect = {
+        "progress": 3.0,
+        "energy": -0.3,            # [-0.4, -0.3],
+    }
+    gage_init_std = 0.5
     num_steps_per_env = 32
-    max_iterations = 1000
-    save_interval = 50
+    max_iterations = 2000
+    save_interval = 100
     experiment_name = "humanoid"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,

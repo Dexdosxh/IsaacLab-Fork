@@ -110,12 +110,17 @@ class OnPolicyRunner:
             ratios = []
             for key, target in self.cfg["rewards_expect"].items():
                 val = extras['log']['Episode_Reward/' + key]
-
-                # if target > 0:
-                #     ratio = torch.clamp(val / target, 0.0, 1.0)
-                # else:
-                rel_dev = abs(val - target) / abs(target)
-                ratio = torch.clamp(1.0 - rel_dev, 0.0, 1.0)
+                # for positive goals do normal Gage (clamp so it can't exceed 1.0)
+                if target > 0:
+                    ratio = torch.clamp(val / target, 0.0, 1.0)
+                else:
+                    # for negative goals, it needs to be 1 until it is worse than the goal
+                    if val >= target:
+                        ratio = 1
+                    # and if its worse it is handled with normal gage but absolute values
+                    else:
+                        abs_ratio = abs(target) / abs(val)
+                        ratio = torch.clamp(abs_ratio, 0.0, 1.0)
                 ratios.append(ratio)
             reward_achieve_ratio_new = min(ratios)
             reward_achieve_ratio = (1-0.05) * reward_achieve_ratio + 0.05 * reward_achieve_ratio_new

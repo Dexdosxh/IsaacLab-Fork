@@ -132,15 +132,15 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # (1) Reward for moving forward
-    progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (1000.0, 0.0, 0.0)})
+    progress = RewTerm(func=mdp.forward_speed, weight=3.0)
     # (2) Stay alive bonus
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
     # (3) Reward for non-upright posture
-    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.1, params={"threshold": 0.93})
+    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     # (4) Reward for moving in the right direction
-    move_to_target = RewTerm(
-        func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)}
-    )
+    # move_to_target = RewTerm(
+    #     func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)}
+    # )
     # (5) Penalty for large action commands
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01)
     # (6) Penalty for energy consumption
@@ -184,6 +184,39 @@ class RewardsCfg:
     # (8) Penalty for moving in y direction
     cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
 
+    # (9) Penalty for Deviation of Joints that are not important for walking
+    joint_deviation_hip = RewTerm(
+    func=mdp.joint_deviation_l1,
+    weight=-0.2,
+    params={"asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=[".*_waist.*"]
+    )},
+    )
+    joint_deviation_arms = RewTerm(
+    func=mdp.joint_deviation_l1,
+    weight=-0.2,
+    params={"asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=[".*_upper_arm.*", ".*_lower_arm"]
+    )},
+    )
+    joint_deviation_torso = RewTerm(
+    func=mdp.joint_deviation_l1,
+    weight=-0.1,
+    params={"asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=["pelvis"]
+    )},
+    )   
+    joint_deviation_torso = RewTerm(
+    func=mdp.joint_deviation_l1,
+    weight=-0.05,
+    params={"asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=[".*_foot.*"]
+    )},
+    )      
 
 @configclass
 class TerminationsCfg:

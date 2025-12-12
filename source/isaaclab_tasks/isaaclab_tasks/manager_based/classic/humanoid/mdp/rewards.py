@@ -148,3 +148,10 @@ def off_track(
     """penalty for going off track."""
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.abs(asset.data.root_vel_w[:, 1])
+
+def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    vel = asset.data.root_vel_w[:,0] / 3.0
+    result = torch.clamp(vel, 0.0, 1.0)
+    return result

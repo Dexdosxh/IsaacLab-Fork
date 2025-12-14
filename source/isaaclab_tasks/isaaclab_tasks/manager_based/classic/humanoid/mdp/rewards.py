@@ -151,7 +151,14 @@ def off_track(
 
 def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
+    """Reward for going forward in specific speed"""
     asset: Articulation = env.scene[asset_cfg.name]
-    vel = asset.data.root_vel_w[:,0] / 3.0
+    speed = 3.0
+    vel = asset.data.root_vel_w[:,0] / speed
     result = torch.clamp(vel, 0.0, 1.0)
     return result
+
+# def feet_yaw_deviation(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     asset: Articulation = env.scene[asset_cfg.name]
+

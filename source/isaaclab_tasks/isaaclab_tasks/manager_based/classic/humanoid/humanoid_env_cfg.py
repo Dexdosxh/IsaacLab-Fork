@@ -131,37 +131,18 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
+    # -----------------------------------------------------------
+    # BASIS
+    # -----------------------------------------------------------
     # (1) Reward for moving forward
-    progress = RewTerm(func=mdp.forward_speed, weight=3.0)
+    progress = RewTerm(func=mdp.forward_speed, weight=1.0)
     # (2) Stay alive bonus
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
     # (3) Reward for non-upright posture
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
-    # (4) Reward for moving in the right direction
-    # move_to_target = RewTerm(
-    #     func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)}
-    # )
-    # (5) Penalty for large action commands
+    # (4) Penalty for large action commands
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01)
-    # (6) Penalty for energy consumption
-    energy = RewTerm(
-        func=mdp.power_consumption,
-        weight=-0.005,
-        params={
-            "gear_ratio": {
-                ".*_waist.*": 67.5,
-                ".*_upper_arm.*": 67.5,
-                "pelvis": 67.5,
-                ".*_lower_arm": 45.0,
-                ".*_thigh:0": 45.0,
-                ".*_thigh:1": 135.0,
-                ".*_thigh:2": 45.0,
-                ".*_shin": 90.0,
-                ".*_foot.*": 22.5,
-            }
-        },
-    )
-    # (7) Penalty for reaching close to joint limits
+    # (5) Penalty for reaching close to joint limits
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits_penalty_ratio,
         weight=-0.25,
@@ -180,43 +161,138 @@ class RewardsCfg:
             },
         },
     )
-
-    # (8) Penalty for moving in y direction
-    cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
-
-    # (9) Penalty for Deviation of Joints that are not important for walking
-    joint_deviation_hip = RewTerm(
-    func=mdp.joint_deviation_l1,
-    weight=-0.2,
-    params={"asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=[".*_waist.*"]
-    )},
+    
+    # -----------------------------------------------------------
+    # ENERGY
+    # -----------------------------------------------------------
+    # (6) Penalty for energy consumption
+    energy = RewTerm(
+        func=mdp.power_consumption,
+        weight=-0.005,
+        params={
+            "gear_ratio": {
+                ".*_waist.*": 67.5,
+                ".*_upper_arm.*": 67.5,
+                "pelvis": 67.5,
+                ".*_lower_arm": 45.0,
+                ".*_thigh:0": 45.0,
+                ".*_thigh:1": 135.0,
+                ".*_thigh:2": 45.0,
+                ".*_shin": 90.0,
+                ".*_foot.*": 22.5,
+            }
+        },
     )
-    joint_deviation_arms = RewTerm(
-    func=mdp.joint_deviation_l1,
-    weight=-0.2,
-    params={"asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=[".*_upper_arm.*", ".*_lower_arm"]
-    )},
+
+    # -----------------------------------------------------------
+    # TORQUE
+    # -----------------------------------------------------------
+    # INSTANT TORQUE 
+    # (7) Penalty for reaching close to joint torque limit
+    joint_torque_limit = RewTerm(
+        func=mdp.joint_torque_limit_penalty_ratio,
+        weight=-0.005,
+        params={
+            "exponent": 2,
+            "tau_max": {
+                ".*_waist.*": 67.5,
+                ".*_upper_arm.*": 67.5,
+                "pelvis": 67.5,
+                ".*_lower_arm": 45.0,
+                ".*_thigh:0": 45.0,
+                ".*_thigh:1": 135.0,
+                ".*_thigh:2": 45.0,
+                ".*_shin": 90.0,
+                ".*_foot.*": 22.5,
+            },
+        },
     )
-    joint_deviation_torso = RewTerm(
-    func=mdp.joint_deviation_l1,
-    weight=-0.1,
-    params={"asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=["pelvis"]
-    )},
-    )   
-    joint_deviation_torso = RewTerm(
-    func=mdp.joint_deviation_l1,
-    weight=-0.05,
-    params={"asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=[".*_foot.*"]
-    )},
-    )      
+
+    # GLOBAL JOINT FATIGUE
+    #(8) Global Joint Fatigue penalty for joint usage
+    joint_fatigue = RewTerm(
+        func=mdp.joint_torque_fatigue_penalty_global,
+        weight=-0.01,
+        params={
+            "exponent": 2,
+            "buildup_rate": 1.0,
+            "recovery_rate": 0.5, 
+            "tau_max": {
+                ".*_waist.*": 67.5,
+                ".*_upper_arm.*": 67.5,
+                "pelvis": 67.5,
+                ".*_lower_arm": 45.0,
+                ".*_thigh:0": 45.0,
+                ".*_thigh:1": 135.0,
+                ".*_thigh:2": 45.0,
+                ".*_shin": 90.0,
+                ".*_foot.*": 22.5,
+            },
+        },
+    )
+
+    # PER JOINT FATIGUE
+    #(9) Per Joint Fatigue penalty for joint usage
+    joint_fatigue = RewTerm(
+        func=mdp.joint_torque_fatigue_penalty_per_joint_uniform,
+        weight=-0.01,
+        params={
+            "exponent": 2,
+            "buildup_rate": 1.0,
+            "recovery_rate": 0.5, 
+            "tau_max": {
+                ".*_waist.*": 67.5,
+                ".*_upper_arm.*": 67.5,
+                "pelvis": 67.5,
+                ".*_lower_arm": 45.0,
+                ".*_thigh:0": 45.0,
+                ".*_thigh:1": 135.0,
+                ".*_thigh:2": 45.0,
+                ".*_shin": 90.0,
+                ".*_foot.*": 22.5,
+            },
+        },
+    )
+
+
+    # # (8) Penalty for moving in y direction
+    # cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
+
+
+    # Reward Shaping 
+    # # (9) Penalty for Deviation of Joints that are not important for walking
+    # joint_deviation_hip = RewTerm(
+    # func=mdp.joint_deviation_l1,
+    # weight=-0.2,
+    # params={"asset_cfg": SceneEntityCfg(
+    #     "robot",
+    #     joint_names=[".*_waist.*"]
+    # )},
+    # )
+    # joint_deviation_arms = RewTerm(
+    # func=mdp.joint_deviation_l1,
+    # weight=-0.2,
+    # params={"asset_cfg": SceneEntityCfg(
+    #     "robot",
+    #     joint_names=[".*_upper_arm.*", ".*_lower_arm"]
+    # )},
+    # )
+    # joint_deviation_torso = RewTerm(
+    # func=mdp.joint_deviation_l1,
+    # weight=-0.1,
+    # params={"asset_cfg": SceneEntityCfg(
+    #     "robot",
+    #     joint_names=["pelvis"]
+    # )},
+    # )   
+    # joint_deviation_feet = RewTerm(
+    # func=mdp.joint_deviation_l1,
+    # weight=-0.02,
+    # params={"asset_cfg": SceneEntityCfg(
+    #     "robot",
+    #     joint_names=[".*_foot.*"]
+    # )},
+    # )      
 
 @configclass
 class TerminationsCfg:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
+from isaaclab.managers.manager_term_cfg import ManagerTermBaseCfg
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
 from isaaclab.assets import Articulation
@@ -158,7 +159,236 @@ def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
     result = torch.clamp(vel, 0.0, 1.0)
     return result
 
-# def feet_yaw_deviation(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-# ) -> torch.Tensor:
-#     asset: Articulation = env.scene[asset_cfg.name]
 
+# class energy_aftereffect_linear(ManagerTermBase):
+#     """
+#     Linear aftereffect of instantaneous power consumption
+#     - Instant power is computed like mdp.power_consumption (abs(tau * qdot) weighted by gear_ratio_scaled).
+#     - This term returns ONLY the aftereffect (a decaying buffer), not the instant power itself.
+
+#     Update per step:
+#         after = max(buffer - decay_per_step, 0)
+#         buffer = after + instant_power
+#         return after
+#     """
+#     def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+#         # add default argument
+#         self.asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+#         # extract the used quantities (to enable type-hinting)
+#         asset: Articulation = env.scene[self.asset_cfg.name]
+
+#         # same gear_ratio handling as power_consumption
+#         self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+#         index_list, _, value_list = string_utils.resolve_matching_names_values(
+#             cfg.params["gear_ratio"], asset.joint_names
+#         )
+#         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
+#         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
+
+#         # buffer per env (scalar)
+#         self.buffer = torch.zeros(env.num_envs, device=env.device)
+
+#         # linear decay settings
+#         # decay_rate: "how much aftereffect decreases per second" in the same units as instant_power
+#         self.decay_rate = float(cfg.params.get("decay_rate", 1.0))
+
+#         # timestep
+#         self.dt = float(env.step_dt)
+#         # dt_env = getattr(env, "step_dt", None)
+#         # if isinstance(dt_env, (int, float)):
+#         #     self.dt = float(dt_env)
+#         # else:
+#         #     dt_cfg = cfg.params.get("dt", 1.0 / 60.0)
+#         #     self.dt = float(dt_cfg) if isinstance(dt_cfg, (int, float)) else 1.0 / 60.0
+
+#     def __call__(
+#         self,
+#         env: ManagerBasedRLEnv, 
+#         decay_rate: float,
+#         gear_ratio: dict[str, float], 
+#         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+#     ) -> torch.Tensor:
+#         # extract the used quantities (to enable type-hinting)
+#         asset: Articulation = env.scene[asset_cfg.name]
+#         # Instant power like power_consumption:
+#         instant_power = torch.sum(
+#             torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled),
+#             dim=-1,
+#         )
+#         # Linear decay per step
+#         decay_per_step = self.decay_rate * self.dt
+#         # 1) aftereffect (this is what we RETURN)
+#         after = torch.clamp(self.buffer - decay_per_step, min=0.0)
+#         # 2) update buffer: store decayed remainder + current instant power * timestep
+#         self.buffer = after + instant_power * self.dt
+
+#         # reset on env resets (if done)
+#         # self.buffer[env.termination_manager.dones] = 0.0
+#         if hasattr(env, "termination_manager"):
+#             dones = env.termination_manager.dones
+#             if dones is not None:
+#                 self.buffer = torch.where(dones, torch.zeros_like(self.buffer), self.buffer)
+
+#         return after
+
+class joint_torque_limit_penalty_ratio(ManagerTermBase):
+    """ 
+    Penalty for joints that have a torque too close to the max torque.
+    torque_ratio_at_joint_j = torque_at_joint_j / torque_max_at_joint_j
+    cost = sum(torque_ratios)
+    """
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        # add default argument
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        # extract the used quantities (to enable type-hinting)
+        asset: Articulation = env.scene[asset_cfg.name]
+        # one for every joint in every env: shape = (envs, joints)
+        self.tau_max = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+        index_list, _, value_list = string_utils.resolve_matching_names_values(
+            cfg.params["tau_max"], asset.joint_names
+        )
+        self.tau_max[:, index_list] = torch.tensor(value_list, device=env.device)
+        # protection against division with zero
+        self.tau_max = torch.clamp(self.tau_max, min=1e-6)
+
+    def __call__(self,
+                env: ManagerBasedRLEnv,
+                exponent: int,
+                tau_max: dict[str, float],
+                asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+                ) -> torch.Tensor:
+        # extract the used quantities (to enable type-hinting)
+        asset: Articulation = env.scene[asset_cfg.name]
+        # get the torque
+        tau = asset.data.applied_torque
+        # compute the relative joint utilization
+        rel_tau = torch.abs(tau) / self.tau_max
+        # return cost with l(exponent)
+        return torch.sum(rel_tau ** float(exponent), dim=-1)
+    
+
+class joint_torque_fatigue_penalty_global(ManagerTermBase):
+    """
+    Global fatigue model based on relative applied joint torque.
+
+    Per step:
+        r_j = |tau_applied_j| / tau_max_j
+        s   = sum_j (r_j ** exponent)
+        fatigue = max(fatigue - recovery_rate * dt, 0) + buildup_rate * s * dt
+
+    Returns:
+        fatigue  (shape: [num_envs])
+    """
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        # add default argument
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        # extract the used quantities (to enable type-hinting)
+        asset: Articulation = env.scene[asset_cfg.name]
+        # one for every joint in every env: shape = (envs, joints)
+        self.tau_max = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+        index_list, _, value_list = string_utils.resolve_matching_names_values(
+            cfg.params["tau_max"], asset.joint_names
+        )
+        self.tau_max[:, index_list] = torch.tensor(value_list, device=env.device)
+        # protection against division with zero
+        self.tau_max = torch.clamp(self.tau_max, min=1e-6)
+        # fatigue buffer per env
+        self.fatigue = torch.zeros(env.num_envs, device=env.device)
+
+        # timestep
+        self.dt = float(env.step_dt)
+    
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        exponent: float,
+        tau_max: dict[str, float],
+        buildup_rate: float,
+        recovery_rate: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        # get the torque
+        tau = asset.data.applied_torque
+        # compute the relative joint utilization
+        rel_tau = torch.abs(tau) / self.tau_max
+        # cost with l(exponent)
+        cost = torch.sum(rel_tau ** float(exponent), dim=-1)
+        # cast recovery rate and buildup rate as floats
+        br = float(buildup_rate)
+        rr = float(recovery_rate)
+
+        self.fatigue = torch.clamp(self.fatigue - rr * self.dt, min=0.0)
+        self.fatigue = self.fatigue + br * cost  * self.dt
+        # reset on episode termination
+        if hasattr(env, "termination_manager"):
+            dones = env.termination_manager.dones
+            if dones is not None:
+                self.fatigue = torch.where(dones, torch.zeros_like(self.fatigue), self.fatigue)
+
+        return self.fatigue
+    
+
+class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
+    """
+    Per-joint fatigue model based on relative applied joint torque (uniform parameters).
+
+    For each joint j:
+        r_j = |tau_applied_j| / tau_max_j
+        s_j = r_j ** exponent
+        F_j = max(F_j - recovery_rate * dt, 0) + buildup_rate * s_j * dt
+
+    Returns:
+        sum_j F_j  (shape: [num_envs])
+    """
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        # default robot asset
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+
+        # tau_max per joint (shape: [num_envs, num_joints])
+        self.tau_max = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+        index_list, _, value_list = string_utils.resolve_matching_names_values(
+            cfg.params["tau_max"], asset.joint_names
+        )
+        self.tau_max[:, index_list] = torch.tensor(value_list, device=env.device)
+        self.tau_max = torch.clamp(self.tau_max, min=1e-6)
+
+        # fatigue state per env per joint
+        self.fatigue = torch.zeros(env.num_envs, asset.num_joints, device=env.device)
+
+        # timestep
+        self.dt = float(env.step_dt)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        exponent: float,
+        tau_max: dict[str, float],
+        buildup_rate: float,
+        recovery_rate: float,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        # get the torque
+        tau = asset.data.applied_torque
+        # compute the relative joint utilization
+        rel_tau = torch.abs(tau) / self.tau_max
+        # instant cost of each joint
+        cost_j = rel_tau ** float(exponent)
+        # cast recovery rate and buildup rate as floats
+        br = float(buildup_rate)
+        rr = float(recovery_rate)
+        # update per joint
+        self.fatigue = torch.clamp(self.fatigue - rr * self.dt, min=0.0)
+        self.fatigue = self.fatigue + br * cost_j * self.dt
+
+        # reset on episode termination
+        if hasattr(env, "termination_manager"):
+            dones = env.termination_manager.dones
+            if dones is not None:
+                self.fatigue = torch.where(dones.unsqueeze(-1), torch.zeros_like(self.fatigue), self.fatigue)
+
+        
+        return torch.sum(self.fatigue, dim=-1)
+    

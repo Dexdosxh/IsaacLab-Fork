@@ -161,7 +161,7 @@ class RewardsCfg:
             },
         },
     )
-    
+
     # -----------------------------------------------------------
     # ENERGY
     # -----------------------------------------------------------
@@ -210,30 +210,30 @@ class RewardsCfg:
 
     # GLOBAL JOINT FATIGUE
     #(8) Global Joint Fatigue penalty for joint usage
-    joint_fatigue = RewTerm(
-        func=mdp.joint_torque_fatigue_penalty_global,
-        weight=-0.01,
-        params={
-            "exponent": 2,
-            "buildup_rate": 1.0,
-            "recovery_rate": 0.5, 
-            "tau_max": {
-                ".*_waist.*": 67.5,
-                ".*_upper_arm.*": 67.5,
-                "pelvis": 67.5,
-                ".*_lower_arm": 45.0,
-                ".*_thigh:0": 45.0,
-                ".*_thigh:1": 135.0,
-                ".*_thigh:2": 45.0,
-                ".*_shin": 90.0,
-                ".*_foot.*": 22.5,
-            },
-        },
-    )
+    # joint_fatigue = RewTerm(
+    #     func=mdp.joint_torque_fatigue_penalty_global,
+    #     weight=-0.01,
+    #     params={
+    #         "exponent": 3,
+    #         "buildup_rate": 1.0,
+    #         "recovery_rate": 0.5, 
+    #         "tau_max": {
+    #             ".*_waist.*": 67.5,
+    #             ".*_upper_arm.*": 67.5,
+    #             "pelvis": 67.5,
+    #             ".*_lower_arm": 45.0,
+    #             ".*_thigh:0": 45.0,
+    #             ".*_thigh:1": 135.0,
+    #             ".*_thigh:2": 45.0,
+    #             ".*_shin": 90.0,
+    #             ".*_foot.*": 22.5,
+    #         },
+    #     },
+    # )
 
     # PER JOINT FATIGUE
     #(9) Per Joint Fatigue penalty for joint usage
-    joint_fatigue = RewTerm(
+    per_joint_fatigue = RewTerm(
         func=mdp.joint_torque_fatigue_penalty_per_joint_uniform,
         weight=-0.01,
         params={

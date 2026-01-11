@@ -20,10 +20,10 @@ from isaaclab.utils import configclass
 class ViewerCfg:
     """Configuration of the scene viewport camera."""
 
-    eye: tuple[float, float, float] = (7.5, 7.5, 7.5)
+    eye: tuple[float, float, float] = (4, 2, 0)
     """Initial camera position (in m). Default is (7.5, 7.5, 7.5)."""
 
-    lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    lookat: tuple[float, float, float] = (1.0, 1.0, 0.0)
     """Initial camera target position (in m). Default is (0.0, 0.0, 0.0)."""
 
     cam_prim_path: str = "/OmniverseKit_Persp"
@@ -36,7 +36,7 @@ class ViewerCfg:
     Default is (1280, 720).
     """
 
-    origin_type: Literal["world", "env", "asset_root", "asset_body"] = "world"
+    origin_type: Literal["world", "env", "asset_root", "asset_body"] = "asset_root"
     """The frame in which the camera position (eye) and target (lookat) are defined in. Default is "world".
 
     Available options are:
@@ -53,7 +53,7 @@ class ViewerCfg:
     This quantity is only effective if :attr:`origin` is set to "env" or "asset_root".
     """
 
-    asset_name: str | None = None
+    asset_name: str = "robot"
     """The asset name in the interactive scene for the frame origin. Default is None.
 
     This quantity is only effective if :attr:`origin` is set to "asset_root".

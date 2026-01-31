@@ -184,6 +184,9 @@ class RewardsCfg:
         },
     )
 
+    # Energy computed with applied torque
+    # energy = RewTerm(func=mdp.energy_consumption, weight=-0.00005)
+
     # -----------------------------------------------------------
     # TORQUE
     # -----------------------------------------------------------
@@ -214,7 +217,7 @@ class RewardsCfg:
     #     func=mdp.joint_torque_fatigue_penalty_global,
     #     weight=-0.01,
     #     params={
-    #         "exponent": 3,
+    #         "exponent": 2,
     #         "buildup_rate": 1.0,
     #         "recovery_rate": 0.5, 
     #         "tau_max": {

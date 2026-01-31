@@ -12,11 +12,11 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class HumanoidPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     rewards_expect = {
         "progress": 3.0, 
-        "energy": -0.05  # for minimum goal: Make a list, [first value: target, second value: min_goal]
+        "energy": -0.045  # for minimum goal: Make a list: [first value: target, second value: min_goal]
     }
     gage_init_std = 0.5
     num_steps_per_env = 32
-    max_iterations = 1500
+    max_iterations = 2000
     save_interval = 100
     experiment_name = "humanoid"
     policy = RslRlPpoActorCriticCfg(

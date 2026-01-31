@@ -142,7 +142,41 @@ class power_consumption(ManagerTermBase):
         asset: Articulation = env.scene[asset_cfg.name]
         # return power = torque * velocity (here actions: joint torques)
         return torch.sum(torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), dim=-1)
+        # return torch.sum(torch.clamp((env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), min=0.0), dim=-1)
+
+class energy_consumption(ManagerTermBase):
+    """Penalty for the mechanical power consumed by the joints.
     
+    This is computed as the sum of absolute mechanical power: 
+    P = sum(|applied_torque * joint_velocity|)
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        # Wir brauchen keine Gear-Ratios mehr vorzubereiten, da applied_torque
+        # bereits das finale Drehmoment am Gelenk ist (inkl. Getriebe-Effekten der Simulation).
+        pass
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        # 1. Das Roboter-Asset aus der Szene holen
+        asset: Articulation = env.scene[asset_cfg.name]
+        
+        # 2. Die echten physikalischen Werte holen
+        # applied_torque: Das Drehmoment [Nm], das die Physik-Engine wirklich angewendet hat
+        # joint_vel: Die aktuelle Geschwindigkeit [rad/s]
+        tau = asset.data.applied_torque
+        vel = asset.data.joint_vel
+        
+        # 3. Mechanische Leistung berechnen: P = |tau * vel|
+        # Wir nehmen den Betrag (abs), da auch Bremsen (negative Arbeit) 
+        # Energie kostet bzw. den Motor belastet.
+        power = torch.abs(tau * vel)
+        
+        # 4. Summe über alle Gelenke bilden
+        return torch.sum(power, dim=-1)
+
+
 def off_track(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

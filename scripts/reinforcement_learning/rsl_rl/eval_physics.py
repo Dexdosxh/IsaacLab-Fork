@@ -81,6 +81,8 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
+import isaaclab.sim as sim_utils
+from isaaclab.assets import AssetBaseCfg
 # PLACEHOLDER: Extension template (do not remove this comment)
 
 
@@ -95,8 +97,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     # --- ÄNDERUNG: Episodenlänge drastisch erhöhen ---
-    # Standard ist oft 20s (1000 Steps). Wir setzen es auf 100s (5000 Steps).
-    # So wird der Fatigue-Buffer nicht durch einen Time-Out-Reset gelöscht.
     env_cfg.episode_length_s = 100.0
 
     # set the environment seed
@@ -122,7 +122,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+    # ---------------------------------------------------------
+    # --- LICHT-BOOST (STUDIO SETUP) ---
+    # ---------------------------------------------------------
+    # 1. Dome Light (Macht alles heller, weiche Schatten, "Umgebungslicht")
+    env_cfg.scene.dome_light = AssetBaseCfg(
+        prim_path="/World/DomeLight",
+        spawn=sim_utils.DomeLightCfg(
+            intensity=400.0,  # Erhöhe diesen Wert für mehr Helligkeit (Standard oft 1000)
+            color=(1.0, 1.0, 1.0),
+            texture_file=None, # None = Weißes Licht, oder Pfad zu einer HDR Map
+        ),
+    )
 
+    # 2. Distant Light (Wie eine starke Sonne, gibt schöne Konturen/Schatten)
+    env_cfg.scene.distant_light = AssetBaseCfg(
+        prim_path="/World/DistantLight",
+        spawn=sim_utils.DistantLightCfg(
+            intensity=2500.0,  # Helligkeit der Sonne
+            color=(1.0, 1.0, 0.9), # Ganz leicht gelblich für Sonnen-Look
+            angle=315.0,       # Richtung des Lichts ändern
+        ),
+    )
+    # ---------------------------------------------------------
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -182,60 +204,56 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
     # ---------------------------------------------------------
-    # --- EVALUATION SETUP (START) ---
+    # --- EVALUATION SETUP (SIMPLE & CLEAN) ---
     # ---------------------------------------------------------
     
-    # 1. Config Parameter definieren
-    EVAL_EXPONENT = 2.0
-    EVAL_BUILDUP_RATE = 1.0
-    EVAL_RECOVERY_RATE = 0.5
-    
-    EVAL_TAU_MAX_PARAMS = {
-        ".*_waist.*": 67.5,
-        ".*_upper_arm.*": 67.5,
-        "pelvis": 67.5,
-        ".*_lower_arm": 45.0,
-        ".*_thigh:0": 45.0,
-        ".*_thigh:1": 135.0,
-        ".*_thigh:2": 45.0,
-        ".*_shin": 90.0,
-        ".*_foot.*": 22.5,
-    }
+    # Zugriff auf den Roboter im Env
+    robot_entity = env.unwrapped.scene["robot"]
+    joint_names = robot_entity.joint_names
+    num_joints = len(joint_names)
 
-    # 2. Tensor für Tau Max erstellen (Mapping auf die Gelenke)
-    # WICHTIG: Hier .unwrapped nutzen, um durch den RSL-RL Wrapper zu kommen!
-    robot = env.unwrapped.scene["robot"] 
-    
-    # Initialisiere mit Default 1.0
-    tau_max_tensor = torch.ones(env.num_envs, robot.num_joints, device=env.device)
-    # Die IsaacLab Funktion nutzen, um die Namen den Indizes zuzuordnen
-    index_list, _, value_list = string_utils.resolve_matching_names_values(
-        EVAL_TAU_MAX_PARAMS, robot.joint_names
-    )
-    tau_max_tensor[:, index_list] = torch.tensor(value_list, device=env.device)
-    # Sicherstellen, dass nichts 0 ist
-    tau_max_tensor = torch.clamp(tau_max_tensor, min=1e-6)
+    # Speicher für ALLE Torque-Werte (Liste von Listen)
+    # Struktur: joint_torque_history[joint_index] = [wert1, wert2, ...]
+    joint_torque_history = [[] for _ in range(num_joints)]
 
-    # 3. Fatigue Buffer initialisieren (startet bei 0)
-    fatigue_buffer = torch.zeros(env.num_envs, robot.num_joints, device=env.device)
-
-    # 4. Speicher für Ergebnisse
-    eval_metrics = {
-        "torque_utilization": [], 
-        "fatigue_mean": [],       
-        "fatigue_peak": 0.0       
-    }
-    
     eval_step_counter = 0
-    EVAL_DURATION_STEPS = 1600 
+    EVAL_DURATION_STEPS = 1000 # Anzahl Steps zum Messen
+    
+    # Für Speed Messung (optional, aber hilfreich zur Kontrolle)
     previous_pos = None
-    print(f"\n[INFO] Starting Shadow Evaluation for {EVAL_DURATION_STEPS} steps...\n")
+
+    print(f"\n[INFO] Starte Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...\n")
+    # ---------------------------------------------------------
+    # --- CHECK: WAS IST DIE DEFAULT POSE? ---
+    # ---------------------------------------------------------
+    print("\n" + "="*50)
+    print("DEFAULT JOINT POSITIONS (Target for Deviation Reward)")
+    print("="*50)
+    
+    # Die Default-Werte stecken im Roboter-Objekt
+    default_pos = robot_entity.data.default_joint_pos[0] # Nimm den ersten Env
+    
+    for j in range(num_joints):
+        name = joint_names[j]
+        val = default_pos[j].item()
+        
+        # Markiere Arme wieder für schnelle Übersicht
+        marker = ""
+        if "arm" in name or "elbow" in name or "shoulder" in name:
+            marker = "  <-- ARM"
+            
+        print(f"{name:<25} : {val:.4f} rad {marker}")
+        
+    print("="*50 + "\n")
+
     # ---------------------------------------------------------
     # --- EVALUATION SETUP (END) ---
     # ---------------------------------------------------------
+
     # reset environment
     obs = env.get_observations()
     timestep = 0
+    
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -247,117 +265,75 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
+            
             # ---------------------------------------------------------
-            # --- EVALUATION LOOP (EXTENDED) ---
+            # --- EVALUATION LOOP ---
             # ---------------------------------------------------------
-            current_pos = robot.data.root_pos_w[:, :2]
+            
+            # 1. Messung der Geschwindigkeit (Zur Kontrolle)
+            current_pos = robot_entity.data.root_pos_w[:, :2]
             if previous_pos is not None:
-                # 2. Distanz berechnen (Euklidischer Abstand: Wurzel aus (dx^2 + dy^2))
-                # Wir nehmen den Durchschnitt über alle Envs, falls du mehrere hast
                 distance_covered = torch.norm(current_pos - previous_pos, dim=-1)
-                
-                # 3. Geschwindigkeit berechnen: Weg / Zeit
                 measured_speed = distance_covered / dt
-                
-                # 4. Ausgabe (Mittelwert über alle Roboter)
                 avg_speed = measured_speed.mean().item()
-                print(f"Gemessene Speed (Pos-Diff): {avg_speed:.2f} m/s")
-
-            # Update für den nächsten Durchlauf
+                # print(f"Gemessene Speed: {avg_speed:.2f} m/s") # Einkommentieren bei Bedarf
             previous_pos = current_pos.clone()
+
+            # 2. TORQUE MESSUNG PRO GELENK
             if eval_step_counter < EVAL_DURATION_STEPS:
-                # --- 0. DATEN HOLEN ---
-                # A) Physik Daten
-                applied_torque = robot.data.applied_torque
-                dof_vel = robot.data.joint_vel
-                root_lin_vel_w = robot.data.root_lin_vel_w
-                root_quat_w = robot.data.root_quat_w
+                # Torques holen und Betrag nehmen
+                current_torques = torch.abs(robot_entity.data.applied_torque)
                 
-                # 2. Wir rotieren sie selbst in den Roboter-Frame
-                # (Das macht genau das gleiche wie .root_lin_vel_b im Hintergrund)
-                vel_b = math_utils.quat_apply_inverse(root_quat_w, root_lin_vel_w)
-                
-                # 3. Wir nehmen die X-Achse (Vorwärts)
-                current_speed = vel_b[:, 0]
+                # NaNs entfernen
+                if torch.isnan(current_torques).any():
+                    current_torques = torch.nan_to_num(current_torques, nan=0.0)
 
-                # B) Konstanten (Bitte anpassen!)
-                ROBOT_MASS = 1
-                GRAVITY = 9.81
-                
-                # --- SICHERHEIT: NaNs abfangen ---
-                if torch.isnan(applied_torque).any():
-                    applied_torque = torch.nan_to_num(applied_torque, nan=0.0)
+                # Durchschnitt über alle Roboter (Envs)
+                avg_torque_per_joint = torch.mean(current_torques, dim=0)
 
-                # --- METRIK 1: TORQUE UTILIZATION ---
-                rel_tau = torch.abs(applied_torque) / tau_max_tensor
-                rel_tau_clamped = torch.clamp(rel_tau, max=10.0) 
-                eval_metrics["torque_utilization"].append(rel_tau_clamped.mean().item())
-
-                # --- METRIK 2: FATIGUE (Dein alter Code) ---
-                fatigue_buffer = torch.clamp(fatigue_buffer - EVAL_RECOVERY_RATE * dt, min=0.0)
-                instant_cost = torch.clamp(rel_tau ** EVAL_EXPONENT, max=1000.0)
-                fatigue_buffer += EVAL_BUILDUP_RATE * instant_cost * dt
-                fatigue_buffer = torch.clamp(fatigue_buffer, max=10000.0)
+                # Werte in die History packen
+                for j in range(num_joints):
+                    val = avg_torque_per_joint[j].item()
+                    joint_torque_history[j].append(val)
                 
-                # Reset Logic (Safe)
-                reset_mask = dones.unsqueeze(-1).float()
-                fatigue_buffer = fatigue_buffer * (1.0 - reset_mask)
-                
-                eval_metrics["fatigue_mean"].append(fatigue_buffer.mean().item())
-                if fatigue_buffer.max().item() > eval_metrics["fatigue_peak"]:
-                    eval_metrics["fatigue_peak"] = fatigue_buffer.max().item()
-
-                # --- NEUE METRIK 3: COST OF TRANSPORT (CoT) ---
-                # Mechanical Power P = sum(|tau * q_dot|)
-                mech_power = torch.sum(torch.abs(applied_torque * dof_vel), dim=-1)
-                
-                # CoT = Power / (mgv)
-                # Wir clampen velocity min auf 0.1, damit wir nicht durch 0 teilen
-                safe_speed = torch.clamp(current_speed, min=0.1)
-                cot = mech_power / (ROBOT_MASS * GRAVITY * safe_speed)
-                
-                # Speichern (wir nehmen den Mean über alle Envs)
-                # Falls "cot" noch nicht im Dict ist, initialisieren wir es dynamisch
-                if "cot" not in eval_metrics: eval_metrics["cot"] = []
-                eval_metrics["cot"].append(cot.mean().item())
-
-                # --- NEUE METRIK 4: ACTION SMOOTHNESS ---
-                # Wir brauchen die "letzte" Action. Wir speichern sie im eval_metrics dict
-                if "last_actions" in eval_metrics:
-                    # Berechne Differenz zum letzten Schritt: ||a_t - a_{t-1}||^2
-                    diff = (actions - eval_metrics["last_actions"]) ** 2
-                    smoothness = diff.mean().item()
-                    if "smoothness" not in eval_metrics: eval_metrics["smoothness"] = []
-                    eval_metrics["smoothness"].append(smoothness)
-                
-                # Aktuelle Action für nächsten Schritt speichern
-                eval_metrics["last_actions"] = actions.clone()
-
-
-                # --- OUTPUT ---
                 eval_step_counter += 1
-                if eval_step_counter % 200 == 0:
-                     print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} - Fatigue: {fatigue_buffer.mean().item():.1f} | CoT: {cot.mean().item():.2f}")
 
-                if eval_step_counter == EVAL_DURATION_STEPS:
-                    import numpy as np
-                    print("\n" + "="*60)
-                    print(f"OFFLINE EVALUATION RESULTS (over {EVAL_DURATION_STEPS} steps)")
-                    print("="*60)
-                    print(f"1. Efficiency (lower is better):")
-                    print(f"   -> Cost of Transport (CoT): {np.mean(eval_metrics['cot']):.4f}")
-                    print(f"   -> Avg Torque Utilization:  {np.mean(eval_metrics['torque_utilization'])*100:.2f} %")
-                    print("-" * 30)
-                    print(f"2. Sustainability:")
-                    print(f"   -> Avg Fatigue Level:       {np.mean(eval_metrics['fatigue_mean']):.2f}")
-                    print(f"   -> Peak Fatigue Level:      {eval_metrics['fatigue_peak']:.2f}")
-                    print("-" * 30)
-                    print(f"3. Control Quality (lower is better):")
-                    if "smoothness" in eval_metrics:
-                        print(f"   -> Action Jitter (Smoothness): {np.mean(eval_metrics['smoothness']):.6f}")
-                    else:
-                        print("   -> Smoothness: (N/A for first step)")
-                    print("="*60 + "\n")
+                # Kleiner Fortschrittsbalken im Terminal
+                if eval_step_counter % 200 == 0:
+                     print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
+
+            # ---------------------------------------------------------
+            # --- AUSGABE DER WERTE (NACH ABLAUF) ---
+            # ---------------------------------------------------------
+            if eval_step_counter == EVAL_DURATION_STEPS:
+                import numpy as np
+                
+                print("\n" + "="*60)
+                print(f"DURCHSCHNITTS-TORQUE PRO GELENK (über {EVAL_DURATION_STEPS} Steps)")
+                print("="*60)
+                print(f"{'ID':<4} | {'Joint Name':<30} | {'Avg Torque (Nm)':<15}")
+                print("-" * 60)
+                
+                all_means = []
+
+                for j in range(num_joints):
+                    mean_val = np.mean(joint_torque_history[j])
+                    all_means.append(mean_val)
+                    
+                    # Arme markieren (*)
+                    marker = ""
+                    if "arm" in joint_names[j] or "elbow" in joint_names[j] or "shoulder" in joint_names[j]:
+                        marker = "*"
+                    
+                    print(f"{j:<4} | {joint_names[j]:<30} | {mean_val:.4f} {marker}")
+
+                print("-" * 60)
+                print(f"Gesamt-Durchschnitt (Körper):    {np.mean(all_means):.4f} Nm")
+                print("="*60 + "\n")
+                eval_step_counter += 1
+                
+                # Beende den Play-Loop nach der Evaluation, wenn du willst:
+                # break 
                 
         if args_cli.video:
             timestep += 1

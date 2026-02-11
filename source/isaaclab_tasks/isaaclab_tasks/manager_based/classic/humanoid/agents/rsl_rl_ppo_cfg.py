@@ -11,8 +11,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class HumanoidPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     rewards_expect = {
-        "progress": 3.0, 
-        "energy": -0.045  # for minimum goal: Make a list: [first value: target, second value: min_goal]
+        "progress": 2.0, 
+        "energy": -0.03  # for minimum goal: Make a list: [first value: target, second value: min_goal]
     }
     gage_init_std = 0.5
     num_steps_per_env = 32

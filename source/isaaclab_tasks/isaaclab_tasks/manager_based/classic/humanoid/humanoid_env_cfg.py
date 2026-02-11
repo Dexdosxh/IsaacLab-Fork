@@ -165,10 +165,13 @@ class RewardsCfg:
     # -----------------------------------------------------------
     # ENERGY
     # -----------------------------------------------------------
-    # (6) Penalty for energy consumption
-    energy = RewTerm(
-        func=mdp.power_consumption,
-        weight=-0.005,
+    # (6) Penalty for mechanical energy consumption
+    energy = RewTerm(func=mdp.energy_consumption, weight=-0.00007)
+
+    # Joule Heating Energy Penalty
+    joule_heating = RewTerm(
+        func=mdp.joule_heating_energy,
+        weight=-0.00001,
         params={
             "gear_ratio": {
                 ".*_waist.*": 67.5,
@@ -184,32 +187,29 @@ class RewardsCfg:
         },
     )
 
-    # Energy computed with applied torque
-    # energy = RewTerm(func=mdp.energy_consumption, weight=-0.00005)
-
     # -----------------------------------------------------------
     # TORQUE
     # -----------------------------------------------------------
     # INSTANT TORQUE 
     # (7) Penalty for reaching close to joint torque limit
-    joint_torque_limit = RewTerm(
-        func=mdp.joint_torque_limit_penalty_ratio,
-        weight=-0.005,
-        params={
-            "exponent": 2,
-            "tau_max": {
-                ".*_waist.*": 67.5,
-                ".*_upper_arm.*": 67.5,
-                "pelvis": 67.5,
-                ".*_lower_arm": 45.0,
-                ".*_thigh:0": 45.0,
-                ".*_thigh:1": 135.0,
-                ".*_thigh:2": 45.0,
-                ".*_shin": 90.0,
-                ".*_foot.*": 22.5,
-            },
-        },
-    )
+    # joint_torque_limit = RewTerm(
+    #     func=mdp.joint_torque_limit_penalty_ratio,
+    #     weight=-0.005,
+    #     params={
+    #         "exponent": 2,
+    #         "tau_max": {
+    #             ".*_waist.*": 67.5,
+    #             ".*_upper_arm.*": 67.5,
+    #             "pelvis": 67.5,
+    #             ".*_lower_arm": 45.0,
+    #             ".*_thigh:0": 45.0,
+    #             ".*_thigh:1": 135.0,
+    #             ".*_thigh:2": 45.0,
+    #             ".*_shin": 90.0,
+    #             ".*_foot.*": 22.5,
+    #         },
+    #     },
+    # )
 
     # GLOBAL JOINT FATIGUE
     #(8) Global Joint Fatigue penalty for joint usage

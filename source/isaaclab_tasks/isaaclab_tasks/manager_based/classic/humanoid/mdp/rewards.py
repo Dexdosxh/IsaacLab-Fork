@@ -141,7 +141,7 @@ class power_consumption(ManagerTermBase):
         # extract the used quantities (to enable type-hinting)
         asset: Articulation = env.scene[asset_cfg.name]
         # return power = torque * velocity (here actions: joint torques)
-        return torch.sum(torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), dim=-1)
+        return torch.sum(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled, dim=-1)
         # return torch.sum(torch.clamp((env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), min=0.0), dim=-1)
 
 class energy_consumption(ManagerTermBase):
@@ -152,9 +152,9 @@ class energy_consumption(ManagerTermBase):
     """
 
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # Wir brauchen keine Gear-Ratios mehr vorzubereiten, da applied_torque
-        # bereits das finale Drehmoment am Gelenk ist (inkl. Getriebe-Effekten der Simulation).
-        pass
+        # extract the used quantities (to enable type-hinting)
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        self.asset: Articulation = env.scene[asset_cfg.name]
 
     def __call__(
         self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
@@ -171,10 +171,39 @@ class energy_consumption(ManagerTermBase):
         # 3. Mechanische Leistung berechnen: P = |tau * vel|
         # Wir nehmen den Betrag (abs), da auch Bremsen (negative Arbeit) 
         # Energie kostet bzw. den Motor belastet.
-        power = torch.abs(tau * vel)
+        power = torch.clamp(tau * vel, min=0.0)  # Nur positive Leistung zählt als Energieverbrauch
         
         # 4. Summe über alle Gelenke bilden
         return torch.sum(power, dim=-1)
+
+
+class joule_heating_energy(ManagerTermBase):
+    """Penalty for the Joule heating in the motors, which is proportional to the square of the current.
+    Assuming a simple motor model where current is proportional to torque, we can compute this as:
+    Joule_heating = sum((applied_torque / gear_ratio_scaled) ** 2)
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        # add default argument
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        # extract the used quantities (to enable type-hinting)
+        asset: Articulation = env.scene[asset_cfg.name]
+
+        # resolve the gear ratio for each joint
+        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
+        index_list, _, value_list = string_utils.resolve_matching_names_values(
+            cfg.params["gear_ratio"], asset.joint_names
+        )
+        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
+        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        # extract the used quantities (to enable type-hinting)
+        asset: Articulation = env.scene[asset_cfg.name]
+        # return power = torque * velocity (here actions: joint torques)
+        return torch.sum((asset.data.applied_torque / self.gear_ratio_scaled) ** 2, dim=-1)
 
 
 def off_track(
@@ -188,84 +217,13 @@ def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
 ) -> torch.Tensor:
     """Reward for going forward in specific speed"""
     asset: Articulation = env.scene[asset_cfg.name]
-    speed = 3.0
+    speed = 1.5
     # vel = asset.data.root_vel_w[:,0]
     # result = torch.clamp(vel, 0.0, speed)
     vel = asset.data.root_lin_vel_b[:, 0]
     result = torch.clamp(vel, 0.0, speed)
     return result
 
-
-class energy_aftereffect_linear(ManagerTermBase):
-    """
-    Linear aftereffect of instantaneous power consumption
-    - Instant power is computed like mdp.power_consumption (abs(tau * qdot) weighted by gear_ratio_scaled).
-    - This term returns ONLY the aftereffect (a decaying buffer), not the instant power itself.
-
-    Update per step:
-        after = max(buffer - decay_per_step, 0)
-        buffer = after + instant_power
-        return after
-    """
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        self.asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[self.asset_cfg.name]
-
-        # same gear_ratio handling as power_consumption
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-        # buffer per env (scalar)
-        self.buffer = torch.zeros(env.num_envs, device=env.device)
-
-        # linear decay settings
-        # decay_rate: "how much aftereffect decreases per second" in the same units as instant_power
-        self.decay_rate = float(cfg.params.get("decay_rate", 1.0))
-
-        # timestep
-        self.dt = float(env.step_dt)
-        # dt_env = getattr(env, "step_dt", None)
-        # if isinstance(dt_env, (int, float)):
-        #     self.dt = float(dt_env)
-        # else:
-        #     dt_cfg = cfg.params.get("dt", 1.0 / 60.0)
-        #     self.dt = float(dt_cfg) if isinstance(dt_cfg, (int, float)) else 1.0 / 60.0
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv, 
-        decay_rate: float,
-        gear_ratio: dict[str, float], 
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # Instant power like power_consumption:
-        instant_power = torch.sum(
-            torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled),
-            dim=-1,
-        )
-        # Linear decay per step
-        decay_per_step = self.decay_rate * self.dt
-        # 1) aftereffect (this is what we RETURN)
-        after = torch.clamp(self.buffer - decay_per_step, min=0.0)
-        # 2) update buffer: store decayed remainder + current instant power * timestep
-        self.buffer = after + instant_power * self.dt
-
-        # reset on env resets (if done)
-        # self.buffer[env.termination_manager.dones] = 0.0
-        if hasattr(env, "termination_manager"):
-            dones = env.termination_manager.dones
-            if dones is not None:
-                self.buffer = torch.where(dones, torch.zeros_like(self.buffer), self.buffer)
-
-        return after
 
 class joint_torque_limit_penalty_ratio(ManagerTermBase):
     """ 

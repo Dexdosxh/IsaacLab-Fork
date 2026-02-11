@@ -204,47 +204,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
     # ---------------------------------------------------------
-    # --- EVALUATION SETUP (SIMPLE & CLEAN) ---
+    # --- EVALUATION SETUP ---
     # ---------------------------------------------------------
-    
-    # Zugriff auf den Roboter im Env
     robot_entity = env.unwrapped.scene["robot"]
     joint_names = robot_entity.joint_names
     num_joints = len(joint_names)
 
-    # Speicher für ALLE Torque-Werte (Liste von Listen)
-    # Struktur: joint_torque_history[joint_index] = [wert1, wert2, ...]
-    joint_torque_history = [[] for _ in range(num_joints)]
-
-    eval_step_counter = 0
-    EVAL_DURATION_STEPS = 1000 # Anzahl Steps zum Messen
+    # Wir nutzen Listen für schnelles Append
+    # history_torque: Liste von [num_joints] Arrays
+    history_torque = []
+    history_vel = []
+    history_power = []
+    history_total_power = []
     
-    # Für Speed Messung (optional, aber hilfreich zur Kontrolle)
+    eval_step_counter = 0
+    EVAL_DURATION_STEPS = 1000 
+    
     previous_pos = None
 
-    print(f"\n[INFO] Starte Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...\n")
-    # ---------------------------------------------------------
-    # --- CHECK: WAS IST DIE DEFAULT POSE? ---
-    # ---------------------------------------------------------
-    print("\n" + "="*50)
-    print("DEFAULT JOINT POSITIONS (Target for Deviation Reward)")
-    print("="*50)
-    
-    # Die Default-Werte stecken im Roboter-Objekt
-    default_pos = robot_entity.data.default_joint_pos[0] # Nimm den ersten Env
-    
-    for j in range(num_joints):
-        name = joint_names[j]
-        val = default_pos[j].item()
-        
-        # Markiere Arme wieder für schnelle Übersicht
-        marker = ""
-        if "arm" in name or "elbow" in name or "shoulder" in name:
-            marker = "  <-- ARM"
-            
-        print(f"{name:<25} : {val:.4f} rad {marker}")
-        
-    print("="*50 + "\n")
+    print(f"\n[INFO] Starte Physics-Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...")
+    print(f"[INFO] Daten werden gesammelt und am Ende gespeichert.\n")
+    # 2. Deine Skalierungswerte (aus der Config)
+    # Da wir die Config hier im eval script evtl. schwer greifen können, 
+    # tragen wir sie hier kurz manuell ein oder vergleichen grob.
+    # (Du weißt ja: thigh=135, shin=90, etc.)
 
     # ---------------------------------------------------------
     # --- EVALUATION SETUP (END) ---
@@ -269,68 +252,68 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # ---------------------------------------------------------
             # --- EVALUATION LOOP ---
             # ---------------------------------------------------------
-            
-            # 1. Messung der Geschwindigkeit (Zur Kontrolle)
-            current_pos = robot_entity.data.root_pos_w[:, :2]
-            if previous_pos is not None:
-                distance_covered = torch.norm(current_pos - previous_pos, dim=-1)
-                measured_speed = distance_covered / dt
-                avg_speed = measured_speed.mean().item()
-                # print(f"Gemessene Speed: {avg_speed:.2f} m/s") # Einkommentieren bei Bedarf
-            previous_pos = current_pos.clone()
-
-            # 2. TORQUE MESSUNG PRO GELENK
+            # --- DATEN SAMMELN ---
             if eval_step_counter < EVAL_DURATION_STEPS:
-                # Torques holen und Betrag nehmen
-                current_torques = torch.abs(robot_entity.data.applied_torque)
+                # 1. Daten holen (Tensor auf GPU)
+                # applied_torque: Das echte Drehmoment, das der Motor leistet (Nm)
+                current_torques = robot_entity.data.applied_torque 
+                # joint_vel: Die echte Geschwindigkeit (rad/s)
+                current_vels = robot_entity.data.joint_vel
                 
                 # NaNs entfernen
-                if torch.isnan(current_torques).any():
-                    current_torques = torch.nan_to_num(current_torques, nan=0.0)
+                if torch.isnan(current_torques).any(): current_torques = torch.nan_to_num(current_torques, nan=0.0)
+                if torch.isnan(current_vels).any(): current_vels = torch.nan_to_num(current_vels, nan=0.0)
 
-                # Durchschnitt über alle Roboter (Envs)
-                avg_torque_per_joint = torch.mean(current_torques, dim=0)
+                # 2. Berechnung (Physikalisch)
+                # Power P = |Torque * Velocity| (Watt)
+                # Wir nehmen abs(), weil wir Gesamtverbrauch wissen wollen
+                current_power = torch.clamp(current_torques * current_vels, min=0.0)  # shape: (num_envs, num_joints)
+                
+                # Gesamt-Power (Summe über alle Gelenke für diesen Step)
+                total_power_step = torch.sum(current_power, dim=-1)
 
-                # Werte in die History packen
-                for j in range(num_joints):
-                    val = avg_torque_per_joint[j].item()
-                    joint_torque_history[j].append(val)
+                # 3. Speichern (Wir nehmen den Durchschnitt über alle Envs, falls du mehrere parallel laufen lässt)
+                # .cpu().numpy() zieht die Daten von der Grafikkarte
+                history_torque.append(torch.mean(current_torques, dim=0).cpu().numpy())
+                history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
+                history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
+                history_total_power.append(torch.mean(total_power_step).cpu().numpy())
                 
                 eval_step_counter += 1
-
-                # Kleiner Fortschrittsbalken im Terminal
                 if eval_step_counter % 200 == 0:
                      print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
 
-            # ---------------------------------------------------------
-            # --- AUSGABE DER WERTE (NACH ABLAUF) ---
-            # ---------------------------------------------------------
+            # --- SPEICHERN & BEENDEN ---
             if eval_step_counter == EVAL_DURATION_STEPS:
-                import numpy as np
-                
                 print("\n" + "="*60)
-                print(f"DURCHSCHNITTS-TORQUE PRO GELENK (über {EVAL_DURATION_STEPS} Steps)")
+                print(f"EVALUATION FERTIG. SPEICHERE DATEN...")
                 print("="*60)
-                print(f"{'ID':<4} | {'Joint Name':<30} | {'Avg Torque (Nm)':<15}")
-                print("-" * 60)
                 
-                all_means = []
-
-                for j in range(num_joints):
-                    mean_val = np.mean(joint_torque_history[j])
-                    all_means.append(mean_val)
-                    
-                    # Arme markieren (*)
-                    marker = ""
-                    if "arm" in joint_names[j] or "elbow" in joint_names[j] or "shoulder" in joint_names[j]:
-                        marker = "*"
-                    
-                    print(f"{j:<4} | {joint_names[j]:<30} | {mean_val:.4f} {marker}")
-
-                print("-" * 60)
-                print(f"Gesamt-Durchschnitt (Körper):    {np.mean(all_means):.4f} Nm")
+                # Umwandeln in große Numpy Arrays
+                # Shape: (Steps, Num_Joints)
+                arr_torque = np.array(history_torque)
+                arr_vel = np.array(history_vel)
+                arr_power = np.array(history_power)
+                arr_total_power = np.array(history_total_power)
+                
+                # Dateiname generieren
+                save_filename = os.path.join(log_dir, "evaluation_data.npz")
+                eval_step_counter += 1  # Damit wir nicht nochmal reingehen
+                # Speichern
+                np.savez(save_filename, 
+                         torque=arr_torque, 
+                         velocity=arr_vel, 
+                         power=arr_power, 
+                         total_power=arr_total_power,
+                         joint_names=np.array(joint_names))
+                
+                print(f"Daten gespeichert unter:\n-> {save_filename}")
+                print(f"\nFormat der Datei:")
+                print(f" - torque:      {arr_torque.shape} (Steps x Joints)")
+                print(f" - velocity:    {arr_vel.shape}")
+                print(f" - power:       {arr_power.shape}")
+                print(f" - total_power: {arr_total_power.shape}")
                 print("="*60 + "\n")
-                eval_step_counter += 1
                 
                 # Beende den Play-Loop nach der Evaluation, wenn du willst:
                 # break 

@@ -25,6 +25,11 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+# --- NEU FÜR TEACHER-STUDENT EVALUATION ---
+parser.add_argument(
+    "--teacher_path", type=str, default=None, help="Path to the trained teacher policy.pt to freeze legs."
+)
+# ------------------------------------------
 parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
@@ -84,7 +89,38 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
 # PLACEHOLDER: Extension template (do not remove this comment)
+# --- NEU: DER WRAPPER FÜR EVALUATION ---
+class ArmTrainingWrapper(gym.Wrapper):
+    def __init__(self, env, teacher_policy_path):
+        super().__init__(env)
+        print(f"[INFO] Lade Teacher-Modell für Evaluation aus: {teacher_policy_path}")
+        
+        self.teacher_policy = torch.jit.load(teacher_policy_path).to(env.unwrapped.device)
+        self.teacher_policy.eval()
+        
+        joint_names = env.unwrapped.scene["robot"].joint_names
+        self.frozen_indices = [
+            i for i, name in enumerate(joint_names) 
+            if "arm" not in name.lower() and "shoulder" not in name.lower() and "elbow" not in name.lower()
+        ]
+        self.current_obs = None
 
+    def step(self, action):
+        with torch.no_grad():
+            teacher_action = self.teacher_policy(self.current_obs)
+            
+        mixed_action = action.clone()
+        mixed_action[:, self.frozen_indices] = teacher_action[:, self.frozen_indices]
+        
+        obs, rewards, dones, truncated, extras = self.env.step(mixed_action)
+        self.current_obs = obs["policy"]
+        return obs, rewards, dones, truncated, extras
+
+    def reset(self, **kwargs):
+        obs, extras = self.env.reset(**kwargs)
+        self.current_obs = obs["policy"]
+        return obs, extras
+# ---------------------------------------
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -147,6 +183,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # ---------------------------------------------------------
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    # --- NEU: WRAPPER AKTIVIEREN ---
+    if args_cli.teacher_path is not None:
+        if not os.path.exists(args_cli.teacher_path):
+            raise FileNotFoundError(f"Teacher Modell nicht gefunden: {args_cli.teacher_path}")
+        env = ArmTrainingWrapper(env, args_cli.teacher_path)
+    # -------------------------------
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -221,13 +263,55 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     EVAL_DURATION_STEPS = 1000 
     
     previous_pos = None
+    # ---------------------------------------------------------
+    # --- FATIGUE SETUP ---
+    # ---------------------------------------------------------
+    # Hyperparameter (Müssen mit deiner Training-Config übereinstimmen!)
+    FATIGUE_EXPONENT = 2.0      # exponent
+    FATIGUE_BUILDUP = 1.0       # buildup_rate (Annahme: 1.0 oder Wert aus Config)
+    FATIGUE_RECOVERY = 0.5      # recovery_rate (Annahme: 1.0 oder Wert aus Config)
+    
+    # Zeitschritt holen
+    dt = env.unwrapped.step_dt
+    
+    # Tau Max Vektor erstellen (Basierend auf deiner Config)
+    # Wir erstellen einen Tensor, der für jedes Gelenk das passende Max-Torque hat
+    tau_max_tensor = torch.ones(env.num_envs, num_joints, device=env.device)
+    
+    # Hier deine Werte eintragen (Beispiel basierend auf deinem vorherigen Chat):
+    # Mapping: "Teilstring im Namen": Limit
+    limit_config = {
+        "waist": 67.5,
+        "upper_arm": 67.5,
+        "pelvis": 67.5,
+        "lower_arm": 45.0,
+        "thigh:0": 45.0,
+        "thigh:1": 135.0,
+        "thigh:2": 45.0,
+        "shin": 90.0,
+        "foot": 22.5
+    }
 
+    print("Konfiguriere Fatigue-Limits...")
+    for j, name in enumerate(joint_names):
+        found = False
+        for key, val in limit_config.items():
+            if key in name:
+                tau_max_tensor[:, j] = val
+                found = True
+                break
+        if not found:
+            print(f"[WARNUNG] Kein Limit für {name} definiert. Setze Standard 45.0")
+            tau_max_tensor[:, j] = 45.0
+
+    # Der Fatigue-Buffer State (Initial 0)
+    current_fatigue_state = torch.zeros(env.num_envs, num_joints, device=env.device)
+    history_total_fatigue = [] # Zum Speichern
+
+    # Update Duration
+    EVAL_DURATION_STEPS = 800
     print(f"\n[INFO] Starte Physics-Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...")
     print(f"[INFO] Daten werden gesammelt und am Ende gespeichert.\n")
-    # 2. Deine Skalierungswerte (aus der Config)
-    # Da wir die Config hier im eval script evtl. schwer greifen können, 
-    # tragen wir sie hier kurz manuell ein oder vergleichen grob.
-    # (Du weißt ja: thigh=135, shin=90, etc.)
 
     # ---------------------------------------------------------
     # --- EVALUATION SETUP (END) ---
@@ -239,7 +323,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     
     # simulate environment
     while simulation_app.is_running():
-        start_time = time.time()
+        start_time = time.time()    
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
@@ -265,20 +349,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if torch.isnan(current_vels).any(): current_vels = torch.nan_to_num(current_vels, nan=0.0)
 
                 # 2. Berechnung (Physikalisch)
-                # Power P = |Torque * Velocity| (Watt)
-                # Wir nehmen abs(), weil wir Gesamtverbrauch wissen wollen
                 current_power = torch.clamp(current_torques * current_vels, min=0.0)  # shape: (num_envs, num_joints)
                 
                 # Gesamt-Power (Summe über alle Gelenke für diesen Step)
                 total_power_step = torch.sum(current_power, dim=-1)
-
+                # --- FATIGUE BERECHNUNG (Nachbau der Reward-Funktion) ---
+                # 1. Relative Auslastung: r = |tau| / tau_max
+                rel_tau = torch.abs(current_torques) / tau_max_tensor
+                
+                # 2. Instant Cost: s = r ^ exponent
+                cost_j = rel_tau ** FATIGUE_EXPONENT
+                
+                # 3. Update Buffer: F_new = max(F_old - recovery, 0) + buildup
+                # Recovery abziehen
+                current_fatigue_state = torch.clamp(current_fatigue_state - FATIGUE_RECOVERY * dt, min=0.0)
+                # Buildup draufrechnen
+                current_fatigue_state = current_fatigue_state + FATIGUE_BUILDUP * cost_j * dt
+                total_fatigue_step = torch.sum(current_fatigue_state, dim=-1)
+                # (Optional) Reset bei Done simulieren, falls nötig. 
+                # Für reine Eval oft nicht nötig, da wir continuous laufen lassen wollen.
                 # 3. Speichern (Wir nehmen den Durchschnitt über alle Envs, falls du mehrere parallel laufen lässt)
                 # .cpu().numpy() zieht die Daten von der Grafikkarte
                 history_torque.append(torch.mean(current_torques, dim=0).cpu().numpy())
                 history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
                 history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
                 history_total_power.append(torch.mean(total_power_step).cpu().numpy())
-                
+                history_total_fatigue.append(torch.mean(total_fatigue_step).cpu().numpy())
                 eval_step_counter += 1
                 if eval_step_counter % 200 == 0:
                      print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
@@ -295,6 +391,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 arr_vel = np.array(history_vel)
                 arr_power = np.array(history_power)
                 arr_total_power = np.array(history_total_power)
+                arr_total_fatigue = np.array(history_total_fatigue)
                 
                 # Dateiname generieren
                 save_filename = os.path.join(log_dir, "evaluation_data.npz")
@@ -305,6 +402,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                          velocity=arr_vel, 
                          power=arr_power, 
                          total_power=arr_total_power,
+                         fatigue=arr_total_fatigue,
                          joint_names=np.array(joint_names))
                 
                 print(f"Daten gespeichert unter:\n-> {save_filename}")
@@ -313,6 +411,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 print(f" - velocity:    {arr_vel.shape}")
                 print(f" - power:       {arr_power.shape}")
                 print(f" - total_power: {arr_total_power.shape}")
+                print(f" - fatigue:     {arr_total_fatigue.shape}")
                 print("="*60 + "\n")
                 
                 # Beende den Play-Loop nach der Evaluation, wenn du willst:

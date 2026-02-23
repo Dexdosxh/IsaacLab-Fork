@@ -24,6 +24,11 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+# --- NEU FÜR TEACHER-STUDENT EVALUATION ---
+parser.add_argument(
+    "--teacher_path", type=str, default=None, help="Path to the trained teacher policy.pt to freeze legs."
+)
+# ------------------------------------------
 parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
@@ -78,7 +83,38 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # PLACEHOLDER: Extension template (do not remove this comment)
+# --- NEU: DER WRAPPER FÜR EVALUATION ---
+class ArmTrainingWrapper(gym.Wrapper):
+    def __init__(self, env, teacher_policy_path):
+        super().__init__(env)
+        print(f"[INFO] Lade Teacher-Modell für Evaluation aus: {teacher_policy_path}")
+        
+        self.teacher_policy = torch.jit.load(teacher_policy_path).to(env.unwrapped.device)
+        self.teacher_policy.eval()
+        
+        joint_names = env.unwrapped.scene["robot"].joint_names
+        self.frozen_indices = [
+            i for i, name in enumerate(joint_names) 
+            if "arm" not in name.lower() and "shoulder" not in name.lower() and "elbow" not in name.lower()
+        ]
+        self.current_obs = None
 
+    def step(self, action):
+        with torch.no_grad():
+            teacher_action = self.teacher_policy(self.current_obs)
+            
+        mixed_action = action.clone()
+        mixed_action[:, self.frozen_indices] = teacher_action[:, self.frozen_indices]
+        
+        obs, rewards, dones, truncated, extras = self.env.step(mixed_action)
+        self.current_obs = obs["policy"]
+        return obs, rewards, dones, truncated, extras
+
+    def reset(self, **kwargs):
+        obs, extras = self.env.reset(**kwargs)
+        self.current_obs = obs["policy"]
+        return obs, extras
+# ---------------------------------------
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
@@ -117,7 +153,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-
+    # --- NEU: WRAPPER AKTIVIEREN ---
+    if args_cli.teacher_path is not None:
+        if not os.path.exists(args_cli.teacher_path):
+            raise FileNotFoundError(f"Teacher Modell nicht gefunden: {args_cli.teacher_path}")
+        env = ArmTrainingWrapper(env, args_cli.teacher_path)
+    # -------------------------------
+    
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)

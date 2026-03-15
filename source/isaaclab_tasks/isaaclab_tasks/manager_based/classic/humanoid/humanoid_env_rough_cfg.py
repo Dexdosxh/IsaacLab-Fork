@@ -13,8 +13,8 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.terrains import TerrainImporterCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.terrains import TerrainImporterCfg, TerrainGeneratorCfg
+from isaaclab.terrains.config import MY_SMOOTH_TERRAINS_CFG, ROUGH_TERRAINS_CFG
 from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.classic.humanoid.mdp as mdp
@@ -34,18 +34,23 @@ class MySceneCfg(InteractiveSceneCfg):
     # terrain
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
-        terrain_type="plane",
+        terrain_type="generator",
+        terrain_generator=MY_SMOOTH_TERRAINS_CFG,
+        # Wenn max_init_terrain_level auf 5 steht, spawnen Roboter am Anfang des Trainings
+        # zufällig auf den Leveln 0 bis 5. Fürs Fine-Tuning setze es zwingend auf 0!
+        max_init_terrain_level=0, 
         collision_group=-1,
-        physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=1.0, dynamic_friction=1.0, restitution=0.0),
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
         debug_vis=False,
     )
 
     # robot
     robot = HUMANOID_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-
-    #sensor
-    robot.spawn = robot.spawn.replace(activate_contact_sensors=True)
-    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*_foot", history_length=3, track_air_time=True)
 
     # lights
     light = AssetBaseCfg(
@@ -140,15 +145,13 @@ class RewardsCfg:
     # BASIS
     # -----------------------------------------------------------
     # (1) Reward for moving forward
-    progress = RewTerm(func=mdp.forward_speed, weight=1.0, params={"target_speed": 2.0})
+    progress = RewTerm(func=mdp.forward_speed, weight=1.0, params={"target_speed": 1.0})
     # (2) Stay alive bonus
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
-    # alive = RewTerm(func=mdp.is_terminated, weight=-200.0)
     # (3) Reward for non-upright posture
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     # (4) Penalty for large action commands
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
     # (5) Penalty for reaching close to joint limits
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits_penalty_ratio,
@@ -236,6 +239,26 @@ class RewardsCfg:
     # -----------------------------------------------------------
     # TORQUE
     # ----------------------------------------------------------
+    # INSTANT TORQUE 
+    # (7) Penalty for reaching close to joint torque limit
+    # joint_torque_limit = RewTerm(
+    #     func=mdp.joint_torque_limit_penalty_ratio,
+    #     weight=-0.005,
+    #     params={
+    #         "exponent": 2,
+    #         "tau_max": {
+    #             ".*_waist.*": 67.5,
+    #             ".*_upper_arm.*": 67.5,
+    #             "pelvis": 67.5,
+    #             ".*_lower_arm": 45.0,
+    #             ".*_thigh:0": 45.0,
+    #             ".*_thigh:1": 135.0,
+    #             ".*_thigh:2": 45.0,
+    #             ".*_shin": 90.0,
+    #             ".*_foot.*": 22.5,
+    #         },
+    #     },
+    # )
     # PER JOINT FATIGUE
     #(7) Per Joint Fatigue penalty for joint usage
     per_joint_fatigue = RewTerm(
@@ -264,59 +287,6 @@ class RewardsCfg:
     cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
 
 
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_mujoco,  
-        weight=0.25,                
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_foot", "right_foot"]),
-            "threshold": 0.4,       
-        },
-    )
-
-    #
-    feet_slide = RewTerm(
-        func=mdp.feet_slide,
-        weight=-0.1,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_foot", "right_foot"]),
-            "asset_cfg": SceneEntityCfg("robot", body_names=["left_foot", "right_foot"]),
-        },
-    )
-
-    joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    ".*_upper_arm.*",
-                    ".*_lower_arm",
-                ],
-            )
-        },
-    )
-
-    joint_deviation_hip = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2, # Relativ starke Strafe für das Spreizen
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                # Bestraft die Rotation im Becken und Oberschenkel, die nicht fürs Vorwärtsgehen (Pitch) da ist
-                joint_names=["pelvis", ".*_thigh:1", ".*_thigh:2"], 
-            )
-        },
-    )
-
-    joint_deviation_ankles = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1, # Zwingt das Sprunggelenk in Richtung 0.0 (Fuß flach)
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_foot.*"])
-        },
-    )
-
 @configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
@@ -326,13 +296,38 @@ class TerminationsCfg:
     # (2) Terminate if the robot falls
     torso_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.8})
 
+import torch
+from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
+
+# -----------------------------------------------------------
+# CUSTOM CURRICULUM LOGIC
+# -----------------------------------------------------------
+def terrain_levels_survival(env: ManagerBasedRLEnv, env_ids: torch.Tensor):
+    """Level UP wenn der Roboter überlebt, Level DOWN wenn er fällt."""
+    # Wer hat das Zeitlimit erreicht (erfolgreich überlebt)?
+    survived = env.termination_manager.get_term("time_out")[env_ids]
+    # Wer ist umgefallen (Torso Height unterschritten)?
+    fell = env.termination_manager.get_term("torso_height")[env_ids]
+
+    move_up = survived & ~fell
+    move_down = fell
+
+    # Verschiebt den Spawnpunkt der Roboter im Terrain-Gitter
+    env.scene.terrain.update_env_origins(env_ids, move_up, move_down)
+
 
 @configclass
-class HumanoidEnvCfg(ManagerBasedRLEnvCfg):
+class CurriculumCfg:
+    """Curriculum terms for the MDP."""
+    terrain_levels = CurrTerm(func=terrain_levels_survival)
+
+@configclass
+class HumanoidEnvRoughCfg(ManagerBasedRLEnvCfg):
     """Configuration for the MuJoCo-style Humanoid walking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=5.0, clone_in_fabric=False)
+    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=5.0, clone_in_fabric=True)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -340,6 +335,7 @@ class HumanoidEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
 
     def __post_init__(self):
         """Post initialization."""
@@ -354,6 +350,3 @@ class HumanoidEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physics_material.static_friction = 1.0
         self.sim.physics_material.dynamic_friction = 1.0
         self.sim.physics_material.restitution = 0.0
-        if hasattr(self.scene, "contact_forces") and self.scene.contact_forces is not None:
-            # Der Sensor soll sich mit der Physik-Schrittweite (dt) aktualisieren
-            self.scene.contact_forces.update_period = self.sim.dt

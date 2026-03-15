@@ -12,6 +12,7 @@ from isaaclab.managers.manager_term_cfg import ManagerTermBaseCfg
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
 from isaaclab.assets import Articulation
+from isaaclab.sensors import ContactSensor
 from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 
 from . import observations as obs
@@ -377,13 +378,11 @@ def off_track(
     asset: Articulation = env.scene[asset_cfg.name]
     return torch.abs(asset.data.root_vel_w[:, 1])
 
-def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), target_speed: float = 1.0
 ) -> torch.Tensor:
     """Reward for going forward in specific speed"""
     asset: Articulation = env.scene[asset_cfg.name]
-    speed = 2.0
-    # vel = asset.data.root_vel_w[:,0]
-    # result = torch.clamp(vel, 0.0, speed)
+    speed = target_speed
     vel = asset.data.root_lin_vel_b[:, 0]
     result = torch.clamp(vel, 0.0, speed)
     return result
@@ -549,4 +548,44 @@ class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
 
         
         return torch.sum(self.fatigue, dim=-1)
+    
+
+def feet_air_time_mujoco(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Belohnt den Roboter für abwechselnde Schritte in der Luft."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    
+    # Lese Flug- und Kontaktzeit aus dem Sensor
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    
+    in_contact = contact_time > 0.0
+    in_mode_time = torch.where(in_contact, contact_time, air_time)
+    
+    # Prüfe, ob genau EIN Fuß auf dem Boden ist (Single Stance)
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1
+    
+    # Belohne die Zeit, aber kappe sie beim threshold
+    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
+    reward = torch.clamp(reward, max=threshold)
+    
+    # KEIN COMMAND MANAGER MEHR HIER. 
+    # Der Reward wird einfach direkt zurückgegeben.
+    return reward
+
+
+def feet_slide(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize feet sliding.
+
+    This function penalizes the agent for sliding its feet on the ground. The reward is computed as the
+    norm of the linear velocity of the feet multiplied by a binary contact sensor. This ensures that the
+    agent is penalized only when the feet are in contact with the ground.
+    """
+    # Penalize feet sliding
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+    asset = env.scene[asset_cfg.name]
+
+    body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
+    reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
+    return reward
     

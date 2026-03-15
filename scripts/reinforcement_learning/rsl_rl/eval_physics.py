@@ -263,13 +263,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     EVAL_DURATION_STEPS = 1000 
     
     previous_pos = None
-    # ---------------------------------------------------------
-    # --- FATIGUE SETUP ---
-    # ---------------------------------------------------------
-    # Hyperparameter (Müssen mit deiner Training-Config übereinstimmen!)
-    FATIGUE_EXPONENT = 2.0      # exponent
-    FATIGUE_BUILDUP = 1.0       # buildup_rate (Annahme: 1.0 oder Wert aus Config)
-    FATIGUE_RECOVERY = 0.5      # recovery_rate (Annahme: 1.0 oder Wert aus Config)
     
     # Zeitschritt holen
     dt = env.unwrapped.step_dt
@@ -291,23 +284,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         "shin": 90.0,
         "foot": 22.5
     }
-
-    print("Konfiguriere Fatigue-Limits...")
-    for j, name in enumerate(joint_names):
-        found = False
+    history_total_joule = [] # Zum Speichern der Gesamtenergie (Joule) pro Step
+    history_joule = []
+    # Wir mappen deine limit_config auf die Liste der joint_names
+    gear_ratios_list = []
+    for name in joint_names:
+        found_val = 1.0 # Fallback
         for key, val in limit_config.items():
-            if key in name:
-                tau_max_tensor[:, j] = val
-                found = True
+            # Prüfen ob der Key (z.B. "thigh:1") im Gelenknamen (z.B. "left_thigh:1") steckt
+            if key in name: 
+                found_val = val
                 break
-        if not found:
-            print(f"[WARNUNG] Kein Limit für {name} definiert. Setze Standard 45.0")
-            tau_max_tensor[:, j] = 45.0
+        gear_ratios_list.append(found_val)
 
-    # Der Fatigue-Buffer State (Initial 0)
-    current_fatigue_state = torch.zeros(env.num_envs, num_joints, device=env.device)
-    history_total_fatigue = [] # Zum Speichern
-
+    # Tensor erstellen
+    gear_ratio_tensor = torch.tensor(gear_ratios_list, device=env.device)
+    # Skalierung wie in der Reward-Funktion: Ratio / Max_Ratio
+    gear_ratio = gear_ratio_tensor
     # Update Duration
     EVAL_DURATION_STEPS = 800
     print(f"\n[INFO] Starte Physics-Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...")
@@ -353,19 +346,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 
                 # Gesamt-Power (Summe über alle Gelenke für diesen Step)
                 total_power_step = torch.sum(current_power, dim=-1)
-                # --- FATIGUE BERECHNUNG (Nachbau der Reward-Funktion) ---
-                # 1. Relative Auslastung: r = |tau| / tau_max
-                rel_tau = torch.abs(current_torques) / tau_max_tensor
+                # --- JOULE HEATING BERECHNUNG ---
+                # Formel: (tau / gear_ratio_scaled) ** 2
+                # Das ergibt die "Hitze" pro Gelenk
+                gear_ratio_scaled = gear_ratio / torch.max(gear_ratio)
+                current_joule_per_joint = (current_torques / gear_ratio_scaled) ** 2
                 
-                # 2. Instant Cost: s = r ^ exponent
-                cost_j = rel_tau ** FATIGUE_EXPONENT
-                
-                # 3. Update Buffer: F_new = max(F_old - recovery, 0) + buildup
-                # Recovery abziehen
-                current_fatigue_state = torch.clamp(current_fatigue_state - FATIGUE_RECOVERY * dt, min=0.0)
-                # Buildup draufrechnen
-                current_fatigue_state = current_fatigue_state + FATIGUE_BUILDUP * cost_j * dt
-                total_fatigue_step = torch.sum(current_fatigue_state, dim=-1)
+                # Summe über alle Gelenke für diesen Step
+                total_joule_step = torch.sum(current_joule_per_joint, dim=-1)
                 # (Optional) Reset bei Done simulieren, falls nötig. 
                 # Für reine Eval oft nicht nötig, da wir continuous laufen lassen wollen.
                 # 3. Speichern (Wir nehmen den Durchschnitt über alle Envs, falls du mehrere parallel laufen lässt)
@@ -374,7 +362,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
                 history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
                 history_total_power.append(torch.mean(total_power_step).cpu().numpy())
-                history_total_fatigue.append(torch.mean(total_fatigue_step).cpu().numpy())
+                history_joule.append(torch.mean(current_joule_per_joint, dim=0).cpu().numpy())
+                history_total_joule.append(torch.mean(total_joule_step).cpu().numpy())
                 eval_step_counter += 1
                 if eval_step_counter % 200 == 0:
                      print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
@@ -391,8 +380,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 arr_vel = np.array(history_vel)
                 arr_power = np.array(history_power)
                 arr_total_power = np.array(history_total_power)
-                arr_total_fatigue = np.array(history_total_fatigue)
-                
+                arr_joule = np.array(history_joule)        # Shape: (Steps, 21)
+                arr_total_joule = np.array(history_total_joule) # Shape: (Steps,)
                 # Dateiname generieren
                 save_filename = os.path.join(log_dir, "evaluation_data.npz")
                 eval_step_counter += 1  # Damit wir nicht nochmal reingehen
@@ -402,7 +391,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                          velocity=arr_vel, 
                          power=arr_power, 
                          total_power=arr_total_power,
-                         fatigue=arr_total_fatigue,
+                         joule=arr_joule,           # Einzelne Gelenke
+                         total_joule=arr_total_joule, # Gesamtsumme
                          joint_names=np.array(joint_names))
                 
                 print(f"Daten gespeichert unter:\n-> {save_filename}")
@@ -411,7 +401,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 print(f" - velocity:    {arr_vel.shape}")
                 print(f" - power:       {arr_power.shape}")
                 print(f" - total_power: {arr_total_power.shape}")
-                print(f" - fatigue:     {arr_total_fatigue.shape}")
+                print(f" - joule (per joint): {arr_joule.shape}")
+                print(f" - total_joule:       {arr_total_joule.shape}")
                 print("="*60 + "\n")
                 
                 # Beende den Play-Loop nach der Evaluation, wenn du willst:

@@ -148,7 +148,7 @@ class RewardsCfg:
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     # (4) Penalty for large action commands
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
     # (5) Penalty for reaching close to joint limits
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits_penalty_ratio,
@@ -263,17 +263,16 @@ class RewardsCfg:
     # (8) Penalty for moving in y direction
     cost_off_track = RewTerm(func=mdp.off_track, weight=-1.0)
 
-
+    # (9) Feet forces rewards
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_mujoco,  
         weight=0.25,                
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_foot", "right_foot"]),
-            "threshold": 0.4,       
+            "threshold": 0.7,       
         },
     )
 
-    #
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.1,
@@ -283,39 +282,48 @@ class RewardsCfg:
         },
     )
 
-    joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2,
+    feet_impact_penalty = RewTerm(
+        func=mdp.feet_contact_limit, 
+        weight=-0.001, 
         params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=[
-                    ".*_upper_arm.*",
-                    ".*_lower_arm",
-                ],
-            )
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_foot", "right_foot"]), 
+            "max_force": 2500.0,
         },
     )
 
-    joint_deviation_hip = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2, # Relativ starke Strafe für das Spreizen
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                # Bestraft die Rotation im Becken und Oberschenkel, die nicht fürs Vorwärtsgehen (Pitch) da ist
-                joint_names=["pelvis", ".*_thigh:1", ".*_thigh:2"], 
-            )
-        },
-    )
+    # joint_deviation_arms = RewTerm(
+    #     func=mdp.joint_deviation_l1,
+    #     weight=-0.2,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             joint_names=[
+    #                 ".*_upper_arm.*",
+    #                 ".*_lower_arm",
+    #             ],
+    #         )
+    #     },
+    # )
 
-    joint_deviation_ankles = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1, # Zwingt das Sprunggelenk in Richtung 0.0 (Fuß flach)
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_foot.*"])
-        },
-    )
+    # joint_deviation_hip = RewTerm(
+    #     func=mdp.joint_deviation_l1,
+    #     weight=-0.2, # Relativ starke Strafe für das Spreizen
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             # Bestraft die Rotation im Becken und Oberschenkel, die nicht fürs Vorwärtsgehen (Pitch) da ist
+    #             joint_names=["pelvis", ".*_thigh:1", ".*_thigh:2"], 
+    #         )
+    #     },
+    # )
+
+    # joint_deviation_ankles = RewTerm(
+    #     func=mdp.joint_deviation_l1,
+    #     weight=-0.1, # Zwingt das Sprunggelenk in Richtung 0.0 (Fuß flach)
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_foot.*"])
+    #     },
+    # )
 
 @configclass
 class TerminationsCfg:

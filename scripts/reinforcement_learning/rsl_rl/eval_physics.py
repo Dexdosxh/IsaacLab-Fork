@@ -161,23 +161,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # ---------------------------------------------------------
     # --- LICHT-BOOST (STUDIO SETUP) ---
     # ---------------------------------------------------------
-    # 1. Dome Light (Macht alles heller, weiche Schatten, "Umgebungslicht")
     env_cfg.scene.dome_light = AssetBaseCfg(
-        prim_path="/World/DomeLight",
+        prim_path="/World/sky",
         spawn=sim_utils.DomeLightCfg(
-            intensity=400.0,  # Erhöhe diesen Wert für mehr Helligkeit (Standard oft 1000)
-            color=(1.0, 1.0, 1.0),
-            texture_file=None, # None = Weißes Licht, oder Pfad zu einer HDR Map
-        ),
-    )
-
-    # 2. Distant Light (Wie eine starke Sonne, gibt schöne Konturen/Schatten)
-    env_cfg.scene.distant_light = AssetBaseCfg(
-        prim_path="/World/DistantLight",
-        spawn=sim_utils.DistantLightCfg(
-            intensity=2500.0,  # Helligkeit der Sonne
-            color=(1.0, 1.0, 0.9), # Ganz leicht gelblich für Sonnen-Look
-            angle=315.0,       # Richtung des Lichts ändern
+            # Standard Omniverse HDRI für einen klaren/leicht bewölkten Himmel
+            texture_file="C:/Users/Leo/IsaacLab/pictures/sky.hdr",
+            intensity=1500.0,
         ),
     )
     # ---------------------------------------------------------
@@ -252,60 +241,64 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     joint_names = robot_entity.joint_names
     num_joints = len(joint_names)
 
-    # Wir nutzen Listen für schnelles Append
-    # history_torque: Liste von [num_joints] Arrays
+    # Listen für schnelles Append
     history_torque = []
     history_vel = []
     history_power = []
     history_total_power = []
     
+    # Listen für Joule Heating (Optional)
+    history_joule = []
+    history_total_joule = []
+    history_forces = []
+    history_speed = []
     eval_step_counter = 0
-    EVAL_DURATION_STEPS = 1000 
-    
-    previous_pos = None
+    EVAL_DURATION_STEPS = 800 
     
     # Zeitschritt holen
     dt = env.unwrapped.step_dt
     
-    # Tau Max Vektor erstellen (Basierend auf deiner Config)
-    # Wir erstellen einen Tensor, der für jedes Gelenk das passende Max-Torque hat
-    tau_max_tensor = torch.ones(env.num_envs, num_joints, device=env.device)
-    
-    # Hier deine Werte eintragen (Beispiel basierend auf deinem vorherigen Chat):
-    # Mapping: "Teilstring im Namen": Limit
-    limit_config = {
-        "waist": 67.5,
-        "upper_arm": 67.5,
-        "pelvis": 67.5,
-        "lower_arm": 45.0,
-        "thigh:0": 45.0,
-        "thigh:1": 135.0,
-        "thigh:2": 45.0,
-        "shin": 90.0,
-        "foot": 22.5
-    }
-    history_total_joule = [] # Zum Speichern der Gesamtenergie (Joule) pro Step
-    history_joule = []
-    # Wir mappen deine limit_config auf die Liste der joint_names
-    gear_ratios_list = []
-    for name in joint_names:
-        found_val = 1.0 # Fallback
-        for key, val in limit_config.items():
-            # Prüfen ob der Key (z.B. "thigh:1") im Gelenknamen (z.B. "left_thigh:1") steckt
-            if key in name: 
-                found_val = val
-                break
-        gear_ratios_list.append(found_val)
+    # -----------------------------------------------------------------
+    # AUTOMATISCHE ROBOTER-ERKENNUNG FÜR GEAR RATIOS (JOULE HEATING)
+    # -----------------------------------------------------------------
+    # Wir prüfen anhand des ersten Gelenknamens, welcher Roboter aktiv ist
+    calculate_joule_heating = True
+    limit_config = {}
 
-    # Tensor erstellen
-    gear_ratio_tensor = torch.tensor(gear_ratios_list, device=env.device)
-    # Skalierung wie in der Reward-Funktion: Ratio / Max_Ratio
-    gear_ratio = gear_ratio_tensor
-    # Update Duration
-    EVAL_DURATION_STEPS = 800
+    if any("waist" in name for name in joint_names):
+        print("[INFO] MuJoCo Humanoid erkannt. Lade entsprechende Gear Ratios.")
+        limit_config = {
+            "waist": 67.5, "upper_arm": 67.5, "pelvis": 67.5,
+            "lower_arm": 45.0, "thigh:0": 45.0, "thigh:1": 135.0,
+            "thigh:2": 45.0, "shin": 90.0, "foot": 22.5
+        }
+    elif any("torso_joint" in name for name in joint_names):
+        print("[INFO] Unitree G1 erkannt. Lade entsprechende Gear Ratios.")
+        limit_config = {
+            "hip": 88.0, "knee": 139.0, "ankle": 40.0, "torso": 88.0,
+            "shoulder": 21.0, "elbow": 21.0,
+            # (Setze hier die echten Gear Ratios für den G1 ein, falls du sie hast, ansonsten 1.0)
+        }
+    else:
+        print("[WARNUNG] Unbekannter Roboter. Joule Heating wird NICHT berechnet.")
+        calculate_joule_heating = False
+
+    # Gear Ratios vorbereiten (nur wenn nötig)
+    if calculate_joule_heating:
+        gear_ratios_list = []
+        for name in joint_names:
+            found_val = 1.0 # Fallback
+            for key, val in limit_config.items():
+                if key in name: 
+                    found_val = val
+                    break
+            gear_ratios_list.append(found_val)
+
+        gear_ratio_tensor = torch.tensor(gear_ratios_list, device=env.device)
+        gear_ratio_scaled = gear_ratio_tensor / torch.max(gear_ratio_tensor)
+
     print(f"\n[INFO] Starte Physics-Evaluation für {num_joints} Gelenke ({EVAL_DURATION_STEPS} Steps)...")
     print(f"[INFO] Daten werden gesammelt und am Ende gespeichert.\n")
-
     # ---------------------------------------------------------
     # --- EVALUATION SETUP (END) ---
     # ---------------------------------------------------------
@@ -331,78 +324,94 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # ---------------------------------------------------------
             # --- DATEN SAMMELN ---
             if eval_step_counter < EVAL_DURATION_STEPS:
-                # 1. Daten holen (Tensor auf GPU)
-                # applied_torque: Das echte Drehmoment, das der Motor leistet (Nm)
                 current_torques = robot_entity.data.applied_torque 
-                # joint_vel: Die echte Geschwindigkeit (rad/s)
                 current_vels = robot_entity.data.joint_vel
                 
                 # NaNs entfernen
                 if torch.isnan(current_torques).any(): current_torques = torch.nan_to_num(current_torques, nan=0.0)
                 if torch.isnan(current_vels).any(): current_vels = torch.nan_to_num(current_vels, nan=0.0)
 
-                # 2. Berechnung (Physikalisch)
-                current_power = torch.clamp(current_torques * current_vels, min=0.0)  # shape: (num_envs, num_joints)
-                
-                # Gesamt-Power (Summe über alle Gelenke für diesen Step)
+                # 1. MECHANISCHE ENERGIE (Power) - Immer berechnen
+                current_power = torch.clamp(current_torques * current_vels, min=0.0)
                 total_power_step = torch.sum(current_power, dim=-1)
-                # --- JOULE HEATING BERECHNUNG ---
-                # Formel: (tau / gear_ratio_scaled) ** 2
-                # Das ergibt die "Hitze" pro Gelenk
-                gear_ratio_scaled = gear_ratio / torch.max(gear_ratio)
-                current_joule_per_joint = (current_torques / gear_ratio_scaled) ** 2
                 
-                # Summe über alle Gelenke für diesen Step
-                total_joule_step = torch.sum(current_joule_per_joint, dim=-1)
-                # (Optional) Reset bei Done simulieren, falls nötig. 
-                # Für reine Eval oft nicht nötig, da wir continuous laufen lassen wollen.
-                # 3. Speichern (Wir nehmen den Durchschnitt über alle Envs, falls du mehrere parallel laufen lässt)
-                # .cpu().numpy() zieht die Daten von der Grafikkarte
+                # 2. JOULE HEATING (Optional)
+                if calculate_joule_heating:
+                    current_joule_per_joint = (current_torques / gear_ratio_tensor) ** 2
+                    total_joule_step = torch.sum(current_joule_per_joint, dim=-1)
+                    
+                    history_joule.append(torch.mean(current_joule_per_joint, dim=0).cpu().numpy())
+                    history_total_joule.append(torch.mean(total_joule_step).cpu().numpy())
+
+                # 3. GESCHWINDIGKEIT
+                # Greift die X und Y Achse der World-Velocity ab und berechnet die Norm (echte Fortbewegung auf dem Boden)
+                lin_vel = robot_entity.data.root_lin_vel_w
+                current_speed = torch.norm(lin_vel[:, :2], dim=-1).mean().item()
+                history_speed.append(current_speed)
+
+                # 4. Speichern
                 history_torque.append(torch.mean(current_torques, dim=0).cpu().numpy())
                 history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
                 history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
                 history_total_power.append(torch.mean(total_power_step).cpu().numpy())
-                history_joule.append(torch.mean(current_joule_per_joint, dim=0).cpu().numpy())
-                history_total_joule.append(torch.mean(total_joule_step).cpu().numpy())
-                eval_step_counter += 1
-                if eval_step_counter % 200 == 0:
-                     print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
 
+
+                contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
+                # Hole die Kraft in Z-Richtung (oder die Norm)
+                forces = contact_sensor.data.net_forces_w_history[:, :, :, :].norm(dim=-1).max(dim=1)[0]
+                current_max_force = forces.max().item()
+                history_forces.append(current_max_force)
+
+                eval_step_counter += 1  
+                if eval_step_counter % 200 == 0:
+                    # Nimm die letzten 200 Einträge aus der Liste
+                    last_200_forces = history_forces[-200:]
+                    last_200_speeds = history_speed[-200:]
+                    
+                    # Finde den größten Wert, der in diesen 200 Schritten aufgetreten ist
+                    max_force_in_window = max(last_200_forces)
+                    max_speed_in_window = max(last_200_speeds)
+
+                    print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
+                    print(f" -> Härtester Aufprall in den letzten 200 Steps: {max_force_in_window:.2f} N")
+                    print(f" -> Höchste Geschwindigkeit in den letzten 200 Steps: {max_speed_in_window:.2f} m/s")
             # --- SPEICHERN & BEENDEN ---
             if eval_step_counter == EVAL_DURATION_STEPS:
                 print("\n" + "="*60)
                 print(f"EVALUATION FERTIG. SPEICHERE DATEN...")
                 print("="*60)
                 
-                # Umwandeln in große Numpy Arrays
-                # Shape: (Steps, Num_Joints)
                 arr_torque = np.array(history_torque)
                 arr_vel = np.array(history_vel)
                 arr_power = np.array(history_power)
                 arr_total_power = np.array(history_total_power)
-                arr_joule = np.array(history_joule)        # Shape: (Steps, 21)
-                arr_total_joule = np.array(history_total_joule) # Shape: (Steps,)
-                # Dateiname generieren
+                
+                # Dictionary für np.savez vorbereiten
+                save_data = {
+                    "torque": arr_torque, 
+                    "velocity": arr_vel, 
+                    "power": arr_power, 
+                    "total_power": arr_total_power,
+                    "joint_names": np.array(joint_names)
+                }
+
+                # Joule-Daten nur speichern, wenn berechnet
+                if calculate_joule_heating:
+                    save_data["joule"] = np.array(history_joule)
+                    save_data["total_joule"] = np.array(history_total_joule)
+
                 save_filename = os.path.join(log_dir, "evaluation_data.npz")
-                eval_step_counter += 1  # Damit wir nicht nochmal reingehen
-                # Speichern
-                np.savez(save_filename, 
-                         torque=arr_torque, 
-                         velocity=arr_vel, 
-                         power=arr_power, 
-                         total_power=arr_total_power,
-                         joule=arr_joule,           # Einzelne Gelenke
-                         total_joule=arr_total_joule, # Gesamtsumme
-                         joint_names=np.array(joint_names))
+                eval_step_counter += 1  # Verhindert mehrfaches Speichern
+                
+                # Daten speichern (Entpackt das Dictionary)
+                np.savez(save_filename, **save_data)
                 
                 print(f"Daten gespeichert unter:\n-> {save_filename}")
                 print(f"\nFormat der Datei:")
                 print(f" - torque:      {arr_torque.shape} (Steps x Joints)")
-                print(f" - velocity:    {arr_vel.shape}")
                 print(f" - power:       {arr_power.shape}")
-                print(f" - total_power: {arr_total_power.shape}")
-                print(f" - joule (per joint): {arr_joule.shape}")
-                print(f" - total_joule:       {arr_total_joule.shape}")
+                if calculate_joule_heating:
+                    print(f" - joule:       {save_data['joule'].shape}")
                 print("="*60 + "\n")
                 
                 # Beende den Play-Loop nach der Evaluation, wenn du willst:

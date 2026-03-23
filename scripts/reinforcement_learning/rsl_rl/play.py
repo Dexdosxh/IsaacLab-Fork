@@ -82,6 +82,9 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
+import isaaclab.sim as sim_utils
+from isaaclab.assets import AssetBaseCfg
+
 # PLACEHOLDER: Extension template (do not remove this comment)
 # --- NEU: DER WRAPPER FÜR EVALUATION ---
 class ArmTrainingWrapper(gym.Wrapper):
@@ -150,6 +153,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+    # ---------------------------------------------------------
+    # --- LICHT-BOOST (STUDIO SETUP) ---
+    # ---------------------------------------------------------
+    env_cfg.scene.dome_light = AssetBaseCfg(
+        prim_path="/World/sky",
+        spawn=sim_utils.DomeLightCfg(
+            # Standard Omniverse HDRI für einen klaren/leicht bewölkten Himmel
+            texture_file="C:/Users/Leo/IsaacLab/pictures/sky.hdr",
+            intensity=1500.0,
+        ),
+    )
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

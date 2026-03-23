@@ -29,56 +29,6 @@ def upright_posture_bonus(
     return (up_proj > threshold).float()
 
 
-def move_to_target_bonus(
-    env: ManagerBasedRLEnv,
-    threshold: float,
-    target_pos: tuple[float, float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Reward for moving to the target heading."""
-    heading_proj = obs.base_heading_proj(env, target_pos, asset_cfg).squeeze(-1)
-    return torch.where(heading_proj > threshold, 1.0, heading_proj / threshold)
-
-
-class progress_reward(ManagerTermBase):
-    """Reward for making progress towards the target."""
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # initialize the base class
-        super().__init__(cfg, env)
-        # create history buffer
-        self.potentials = torch.zeros(env.num_envs, device=env.device)
-        self.prev_potentials = torch.zeros_like(self.potentials)
-
-    def reset(self, env_ids: torch.Tensor):
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = self._env.scene["robot"]
-        # compute projection of current heading to desired heading vector
-        target_pos = torch.tensor(self.cfg.params["target_pos"], device=self.device)
-        to_target_pos = target_pos - asset.data.root_pos_w[env_ids, :3]
-        # reward terms
-        self.potentials[env_ids] = -torch.norm(to_target_pos, p=2, dim=-1) / self._env.step_dt
-        self.prev_potentials[env_ids] = self.potentials[env_ids]
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        target_pos: tuple[float, float, float],
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # compute vector to target
-        target_pos = torch.tensor(target_pos, device=env.device)
-        to_target_pos = target_pos - asset.data.root_pos_w[:, :3]
-        to_target_pos[:, 2] = 0.0
-        # update history buffer and compute new potential
-        self.prev_potentials[:] = self.potentials[:]
-        self.potentials[:] = -torch.norm(to_target_pos, p=2, dim=-1) / env.step_dt
-
-        return self.potentials - self.prev_potentials
-
-
 class joint_pos_limits_penalty_ratio(ManagerTermBase):
     """Penalty for violating joint position limits weighted by the gear ratio."""
 
@@ -116,34 +66,6 @@ class joint_pos_limits_penalty_ratio(ManagerTermBase):
         return torch.sum((torch.abs(joint_pos_scaled) > threshold) * violation_amount, dim=-1)
 
 
-class power_consumption(ManagerTermBase):
-    """Penalty for the power consumed by the actions to the environment.
-
-    This is computed as commanded torque times the joint velocity.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-
-        # resolve the gear ratio for each joint
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # return power = torque * velocity (here actions: joint torques)
-        return torch.sum(torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), dim=-1)
-
 class energy_consumption(ManagerTermBase):
     """Penalty for the mechanical power consumed by the joints.
     
@@ -157,7 +79,7 @@ class energy_consumption(ManagerTermBase):
         asset: Articulation = env.scene[asset_cfg.name]
         self.arm_indices = [
             i for i, name in enumerate(asset.joint_names) 
-            if "upper_arm" in name or "lower_arm" in name
+            if "shoulder" in name.lower() or "elbow" in name.lower()
         ]
         self.joint_cost_weights = torch.ones(1, asset.num_joints, device=env.device)
         self.joint_cost_weights[:, self.arm_indices] = 3  # Arms cost x more energy
@@ -185,77 +107,6 @@ class energy_consumption(ManagerTermBase):
         return torch.sum(power, dim=-1)
     
 
-class energy_consumption_upper_body(ManagerTermBase):
-    """Penalty for the mechanical power consumed by the UPPER BODY joints (arms, waist, pelvis).
-    
-    This is computed as the sum of positive mechanical power: 
-    P = sum(max(applied_torque * joint_velocity, 0)) for upper body joints.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        asset: Articulation = env.scene[asset_cfg.name]
-        
-        # Indizes für den Oberkörper finden
-        self.upper_indices = [
-            i for i, name in enumerate(asset.joint_names) 
-            if "arm" in name.lower()
-        ]
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        asset: Articulation = env.scene[asset_cfg.name]
-        
-        tau = asset.data.applied_torque
-        vel = asset.data.joint_vel
-        
-        # Mechanische Leistung berechnen (nur positive Leistung)
-        power = torch.clamp(tau * vel, min=0.0)
-        
-        # Nur die Leistung der Oberkörper-Gelenke extrahieren
-        upper_power = power[:, self.upper_indices]
-        
-        # Summe über die gefilterten Gelenke bilden
-        return torch.sum(upper_power, dim=-1)
-
-
-class energy_consumption_lower_body(ManagerTermBase):
-    """Penalty for the mechanical power consumed by the LOWER BODY joints (thigh, shin, foot).
-    
-    This is computed as the sum of positive mechanical power: 
-    P = sum(max(applied_torque * joint_velocity, 0)) for lower body joints.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        asset: Articulation = env.scene[asset_cfg.name]
-        
-        # Indizes für den Unterkörper finden
-        self.lower_indices = [
-            i for i, name in enumerate(asset.joint_names) 
-            if "thigh" in name.lower() or "shin" in name.lower() or "foot" in name.lower() 
-            or "waist" in name.lower() or "pelvis" in name.lower()
-        ]
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        asset: Articulation = env.scene[asset_cfg.name]
-        
-        tau = asset.data.applied_torque
-        vel = asset.data.joint_vel
-        
-        # Mechanische Leistung berechnen (nur positive Leistung)
-        power = torch.clamp(tau * vel, min=0.0)
-        
-        # Nur die Leistung der Unterkörper-Gelenke extrahieren
-        lower_power = power[:, self.lower_indices]
-        
-        # Summe über die gefilterten Gelenke bilden
-        return torch.sum(lower_power, dim=-1)
-
-
 class joule_heating_energy(ManagerTermBase):
     """Penalty for the Joule heating in the motors, which is proportional to the square of the current.
     Assuming a simple motor model where current is proportional to torque, we can compute this as:
@@ -275,12 +126,6 @@ class joule_heating_energy(ManagerTermBase):
         )
         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-        self.arm_indices = [
-            i for i, name in enumerate(asset.joint_names) 
-            if "upper_arm" in name or "lower_arm" in name
-        ]
-        self.joint_cost_weights = torch.ones(1, asset.num_joints, device=env.device)
-        self.joint_cost_weights[:, self.arm_indices] = 3
 
     def __call__(
         self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
@@ -289,86 +134,8 @@ class joule_heating_energy(ManagerTermBase):
         asset: Articulation = env.scene[asset_cfg.name]
         tau = asset.data.applied_torque
         base_heating = (tau / self.gear_ratio_scaled) ** 2
-        # base_heating = base_heating * self.joint_cost_weights
 
         return torch.sum(base_heating, dim=-1)
-    
-
-class joule_heating_energy_upper_body(ManagerTermBase):
-    """Penalty for the Joule heating in the motors of the upper body joints, which is proportional to the square of the current.
-    Assuming a simple motor model where current is proportional to torque, we can compute this as:
-    Joule_heating = sum((applied_torque / gear_ratio_scaled) ** 2) for upper body joints.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-
-        # resolve the gear ratio for each joint
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-        # Indizes für den Oberkörper finden
-        self.upper_indices = [
-            i for i, name in enumerate(asset.joint_names) 
-            if "arm" in name.lower()
-        ]
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        asset: Articulation = env.scene[asset_cfg.name]
-        tau = asset.data.applied_torque
-        base_heating = (tau / self.gear_ratio_scaled) ** 2
-
-        upper_heating = base_heating[:, self.upper_indices]
-
-        return torch.sum(upper_heating, dim=-1)
-    
-
-class joule_heating_energy_lower_body(ManagerTermBase):
-    """Penalty for the Joule heating in the motors of the lower body joints, which is proportional to the square of the current.
-    Assuming a simple motor model where current is proportional to torque, we can compute this as:
-    Joule_heating = sum((applied_torque / gear_ratio_scaled) ** 2) for lower body joints.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-
-        # resolve the gear ratio for each joint
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-        # Indizes für den Unterkörper finden
-        self.lower_indices = [
-            i for i, name in enumerate(asset.joint_names) 
-            if "thigh" in name.lower() or "shin" in name.lower() or "foot" in name.lower()
-              or "waist" in name.lower() or "pelvis" in name.lower()
-        ]
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        asset: Articulation = env.scene[asset_cfg.name]
-        tau = asset.data.applied_torque
-        base_heating = (tau / self.gear_ratio_scaled) ** 2
-
-        lower_heating = base_heating[:, self.lower_indices]
-
-        return torch.sum(lower_heating, dim=-1)
 
 
 def off_track(
@@ -385,6 +152,28 @@ def forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntit
     speed = target_speed
     vel = asset.data.root_lin_vel_b[:, 0]
     result = torch.clamp(vel, 0.0, speed)
+    return result
+
+
+def hybrid_forward_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), target_speed: float = 2.0) -> torch.Tensor:
+    """Linear reward up to target_speed, exponential penalty if exceeding it."""
+    asset = env.scene[asset_cfg.name]
+    vel = asset.data.root_lin_vel_b[:, 0]
+    
+    # 1. Die Rampe: Linearer Anstieg bis zum Ziel (wie dein allererster Reward)
+    # Stoppt exakt bei target_speed (2.0)
+    linear_reward = torch.clamp(vel, min=0.0, max=target_speed)
+    
+    # 2. Der Fehler: Wie viel ist er zu schnell? (Alles unter 2.0 wird hier zu 0.0)
+    overshoot = torch.clamp(vel - target_speed, min=0.0)
+    
+    # 3. Der Absturz: Exponentielle Strafe (Gauss) nur für die Überschreitung
+    # Die 0.25 steuert, wie extrem der Absturz ist.
+    penalty_multiplier = torch.exp(-torch.square(overshoot) / 0.25)
+    
+    # 4. Kombinieren: Rampe * Strafe
+    result = linear_reward * penalty_multiplier
+    
     return result
 
 
@@ -551,7 +340,7 @@ class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
     
 
 def feet_air_time_mujoco(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Rewards the agent for taking steps that are longer than a threshold, based on Mujoco contact sensor data."""
+    """Rewards the agent for taking steps that are longer than a threshold, based on G1 contact sensor data."""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     
     # Lese Flug- und Kontaktzeit aus dem Sensor
@@ -596,16 +385,13 @@ def feet_contact_limit(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, max_f
     Incentivizes the agent to walk lightly and not slam its feet.
     """
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    
-    # 1. Hole die maximalen Kontaktkräfte der letzten History-Schritte (in Newton)
+    # 1. Get contact forces for the specified bodies and compute their norm (total force magnitude)
     # Shape: (num_envs, num_feet)
     contact_forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0]
-    
-    # 2. ReLU / Weicher Threshold: Alles unter max_force wird zu 0.0
+    # 2. ReLU / Threshold 
     # Shape: (num_envs, num_feet)
     excess_force = torch.clamp(contact_forces - max_force, min=0.0)
-    
-    # 3. Summiere die überschüssige Kraft über alle Füße (links + rechts)
+    # 3. Sum over both feet
     # Shape: (num_envs,)
     penalty = torch.sum(excess_force, dim=-1)
     

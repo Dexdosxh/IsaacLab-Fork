@@ -20,10 +20,10 @@ from isaaclab.utils import configclass
 class ViewerCfg:
     """Configuration of the scene viewport camera."""
 
-    eye: tuple[float, float, float] = (4, 2, 0)
+    eye: tuple[float, float, float] = (3.7, 1.4, 0.7)
     """Initial camera position (in m). Default is (7.5, 7.5, 7.5)."""
 
-    lookat: tuple[float, float, float] = (1.0, 1.0, 0.0)
+    lookat: tuple[float, float, float] = (0.8, 0.4, 0.1)
     """Initial camera target position (in m). Default is (0.0, 0.0, 0.0)."""
 
     cam_prim_path: str = "/OmniverseKit_Persp"

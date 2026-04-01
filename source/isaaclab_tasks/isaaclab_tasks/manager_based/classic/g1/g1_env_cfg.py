@@ -125,27 +125,28 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # --- BASIS ---
-    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 2.0})
+    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 1.0})
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # -0.01
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0)
+    # height = RewTerm(func=mdp.track_base_height, weight=0.5, params={"target_height": 0.74})
 
-    joint_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits_penalty_ratio,
-        weight=-0.25,
-        params={
-            "threshold": 0.98,
-            "gear_ratio": {
-                "torso_joint": 88.0,       
-                ".*_hip_.*": 88.0,         
-                ".*_knee_joint": 139.0,    
-                ".*_ankle_.*": 40.0,       
-                ".*_shoulder_.*": 21.0,  
-                ".*_elbow_.*": 21.0,
-            },
-        },
-    )
+    # joint_pos_limits = RewTerm(
+    #     func=mdp.joint_pos_limits_penalty_ratio,
+    #     weight=-0.25,
+    #     params={
+    #         "threshold": 0.98,
+    #         "gear_ratio": {
+    #             "torso_joint": 88.0,       
+    #             ".*_hip_.*": 88.0,         
+    #             ".*_knee_joint": 139.0,    
+    #             ".*_ankle_.*": 40.0,       
+    #             ".*_shoulder_.*": 21.0,  
+    #             ".*_elbow_.*": 21.0,
+    #         },
+    #     },
+    # )
 
     # --- ENERGY ---
     energy = RewTerm(func=mdp.energy_consumption, weight=-0.00005)
@@ -193,7 +194,7 @@ class RewardsCfg:
         weight=0.25,                
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]),
-            "threshold": 0.4,       
+            "threshold": 0.25,       
         },
     )
 
@@ -211,7 +212,7 @@ class RewardsCfg:
         weight=-0.001, 
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]), 
-            "max_force": 1000.0,
+            "max_force": 600.0,
         },
     )
 

@@ -28,6 +28,20 @@ def upright_posture_bonus(
     up_proj = obs.base_up_proj(env, asset_cfg).squeeze(-1)
     return (up_proj > threshold).float()
 
+def track_base_height(
+    env: ManagerBasedRLEnv, target_height: float = 0.74, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Reward for maintaining a specific base height (forces straight legs)."""
+    asset = env.scene[asset_cfg.name]
+    # z position of the base in world coordinates
+    base_height = asset.data.root_pos_w[:, 2]
+    
+    height_error = torch.square(base_height - target_height)
+    # Gauss
+    result = torch.exp(-height_error / 0.01) 
+    
+    return result
+
 
 class joint_pos_limits_penalty_ratio(ManagerTermBase):
     """Penalty for violating joint position limits weighted by the gear ratio."""
@@ -396,3 +410,49 @@ def feet_contact_limit(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, max_f
     penalty = torch.sum(excess_force, dim=-1)
     
     return penalty
+
+
+class cost_of_transport_gauss(ManagerTermBase):
+    """
+    Reward that is exactly 1.0 when speed == target_speed AND power == target_power.
+    Falls off as a 2D Gaussian in both dimensions.
+
+    reward = exp(-0.5 * ((v - v*) / σ_v)²) * exp(-0.5 * ((P - P*) / σ_P)²)
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+
+        # Arm-Indizes für gewichteten Energieverbrauch (wie in energy_consumption)
+        self.arm_indices = [
+            i for i, name in enumerate(asset.joint_names)
+            if "shoulder" in name.lower() or "elbow" in name.lower()
+        ]
+        self.joint_cost_weights = torch.ones(1, asset.num_joints, device=env.device)
+        self.joint_cost_weights[:, self.arm_indices] = 3.0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        target_speed: float = 2.0,
+        target_power: float = 150.0,
+        sigma_speed: float = 0.3,
+        sigma_power: float = 20.0,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+
+        # Geschwindigkeit
+        speed = asset.data.root_lin_vel_b[:, 0]
+
+        # Mechanische Leistung (identisch zu energy_consumption)
+        tau = asset.data.applied_torque * self.joint_cost_weights
+        vel = asset.data.joint_vel
+        power = torch.sum(torch.clamp(tau * vel, min=0.0), dim=-1)
+
+        # 2D Gaussglocke
+        speed_gauss = torch.exp(-0.5 * ((speed - target_speed) / sigma_speed) ** 2)
+        power_gauss = torch.exp(-0.5 * ((power - target_power) / sigma_power) ** 2)
+
+        return speed_gauss * power_gauss

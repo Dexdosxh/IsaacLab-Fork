@@ -307,9 +307,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = env.get_observations()
     timestep = 0
     
+    # --- NEU: TIMING & RTF SETUP ---
+    rtf_start_time = None
+    rtf_last_window_time = None
+    print(f"[INFO] Real-Time Factor (RTF) Tracking aktiv.\n")
+    
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()    
+        
+        # Startzeit exakt beim ersten Schritt festhalten
+        if rtf_start_time is None:
+            rtf_start_time = time.time()
+            rtf_last_window_time = time.time()
+            
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
@@ -344,7 +355,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     history_total_joule.append(torch.mean(total_joule_step).cpu().numpy())
 
                 # 3. GESCHWINDIGKEIT
-                # Greift die X und Y Achse der World-Velocity ab und berechnet die Norm (echte Fortbewegung auf dem Boden)
                 lin_vel = robot_entity.data.root_lin_vel_w
                 current_speed = torch.norm(lin_vel[:, :2], dim=-1).mean().item()
                 history_speed.append(current_speed)
@@ -355,7 +365,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
                 history_total_power.append(torch.mean(total_power_step).cpu().numpy())
 
-
                 contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
                 # Hole die Kraft in Z-Richtung (oder die Norm)
                 forces = contact_sensor.data.net_forces_w_history[:, :, :, :].norm(dim=-1).max(dim=1)[0]
@@ -363,28 +372,54 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 history_forces.append(current_max_force)
 
                 eval_step_counter += 1  
+                
+                # --- OUTPUT ALLE 200 SCHRITTE (INKL. RTF) ---
                 if eval_step_counter % 200 == 0:
+                    # Timing berechnen
+                    current_time = time.time()
+                    elapsed_real_time = current_time - rtf_last_window_time
+                    elapsed_sim_time = 200 * dt
+                    
+                    rtf = elapsed_sim_time / elapsed_real_time if elapsed_real_time > 0 else 0
+                    video_speedup = 1.0 / rtf if rtf > 0 else 1.0
+                    fps = 200 / elapsed_real_time if elapsed_real_time > 0 else 0
+                    
+                    rtf_last_window_time = current_time
+
                     # Nimm die letzten 200 Einträge aus der Liste
                     last_200_forces = history_forces[-200:]
                     last_200_speeds = history_speed[-200:]
                     
-                    # Finde den größten Wert, der in diesen 200 Schritten aufgetreten ist
+                    # Finde den größten Wert
                     max_force_in_window = max(last_200_forces)
                     max_speed_in_window = max(last_200_speeds)
 
-                    print(f"[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
+                    print(f"\n[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
                     print(f" -> Härtester Aufprall in den letzten 200 Steps: {max_force_in_window:.2f} N")
                     print(f" -> Höchste Geschwindigkeit in den letzten 200 Steps: {max_speed_in_window:.2f} m/s")
+                    print(f" -> Performance (RTF):    {rtf:.2f}x ({fps:.1f} Steps/s)")
+                    print(f" -> Video-Schnitt:        Um das {video_speedup:.2f}-fache beschleunigen")
+
             # --- SPEICHERN & BEENDEN ---
             if eval_step_counter == EVAL_DURATION_STEPS:
+                total_real_time = time.time() - rtf_start_time
+                total_sim_time = EVAL_DURATION_STEPS * dt
+                overall_rtf = total_sim_time / total_real_time if total_real_time > 0 else 0
+                overall_speedup = 1.0 / overall_rtf if overall_rtf > 0 else 1.0
+
                 print("\n" + "="*60)
                 print(f"EVALUATION FERTIG. SPEICHERE DATEN...")
                 print("="*60)
+                print(f"Gesamte echte Zeit: {total_real_time:.1f} Sekunden")
+                print(f"Durchschnittlicher RTF: {overall_rtf:.2f}x")
+                print(f"--> Finale Video-Beschleunigung: {overall_speedup:.2f}x")
                 
                 arr_torque = np.array(history_torque)
                 arr_vel = np.array(history_vel)
                 arr_power = np.array(history_power)
                 arr_total_power = np.array(history_total_power)
+                arr_forces = np.array(history_forces)
+                arr_speed = np.array(history_speed)
                 
                 # Dictionary für np.savez vorbereiten
                 save_data = {
@@ -392,7 +427,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "velocity": arr_vel, 
                     "power": arr_power, 
                     "total_power": arr_total_power,
-                    "joint_names": np.array(joint_names)
+                    "joint_names": np.array(joint_names),
+                    "forces": arr_forces,
+                    "speed": arr_speed
                 }
 
                 # Joule-Daten nur speichern, wenn berechnet
@@ -406,16 +443,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 # Daten speichern (Entpackt das Dictionary)
                 np.savez(save_filename, **save_data)
                 
-                print(f"Daten gespeichert unter:\n-> {save_filename}")
+                print(f"\nDaten gespeichert unter:\n-> {save_filename}")
                 print(f"\nFormat der Datei:")
                 print(f" - torque:      {arr_torque.shape} (Steps x Joints)")
                 print(f" - power:       {arr_power.shape}")
                 if calculate_joule_heating:
                     print(f" - joule:       {save_data['joule'].shape}")
                 print("="*60 + "\n")
-                
-                # Beende den Play-Loop nach der Evaluation, wenn du willst:
-                # break 
                 
         if args_cli.video:
             timestep += 1

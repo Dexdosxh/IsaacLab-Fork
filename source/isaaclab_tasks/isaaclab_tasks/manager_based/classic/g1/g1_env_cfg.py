@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.classic.g1.mdp as mdp
 
-from isaaclab_assets.robots.unitree import G1_MINIMAL_CFG  # isort:skip
+from isaaclab_assets.robots.unitree import G1_MINIMAL_CFG, G1_CFG  # isort:skip
 
 
 ##
@@ -39,7 +39,7 @@ class MySceneCfg(InteractiveSceneCfg):
     )
 
     # robot
-    robot = G1_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     # sensor
     robot.spawn = robot.spawn.replace(activate_contact_sensors=True)
@@ -132,21 +132,21 @@ class RewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0)
     # height = RewTerm(func=mdp.track_base_height, weight=0.5, params={"target_height": 0.74})
 
-    # joint_pos_limits = RewTerm(
-    #     func=mdp.joint_pos_limits_penalty_ratio,
-    #     weight=-0.25,
-    #     params={
-    #         "threshold": 0.98,
-    #         "gear_ratio": {
-    #             "torso_joint": 88.0,       
-    #             ".*_hip_.*": 88.0,         
-    #             ".*_knee_joint": 139.0,    
-    #             ".*_ankle_.*": 40.0,       
-    #             ".*_shoulder_.*": 21.0,  
-    #             ".*_elbow_.*": 21.0,
-    #         },
-    #     },
-    # )
+    joint_pos_limits = RewTerm(
+        func=mdp.joint_pos_limits_penalty_ratio,
+        weight=-0.25,
+        params={
+            "threshold": 0.98,
+            "gear_ratio": {
+                "torso_joint": 88.0,       
+                ".*_hip_.*": 88.0,         
+                ".*_knee_joint": 139.0,    
+                ".*_ankle_.*": 40.0,       
+                ".*_shoulder_.*": 21.0,  
+                ".*_elbow_.*": 21.0,
+            },
+        },
+    )
 
     # --- ENERGY ---
     energy = RewTerm(func=mdp.energy_consumption, weight=-0.00005)
@@ -207,14 +207,14 @@ class RewardsCfg:
         },
     )
 
-    feet_impact_penalty = RewTerm(
-        func=mdp.feet_contact_limit, 
-        weight=-0.001, 
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]), 
-            "max_force": 600.0,
-        },
-    )
+    # feet_impact_penalty = RewTerm(
+    #     func=mdp.feet_contact_limit, 
+    #     weight=-0.001, 
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]), 
+    #         "max_force": 600.0,
+    #     },
+    # )
 
 
 @configclass

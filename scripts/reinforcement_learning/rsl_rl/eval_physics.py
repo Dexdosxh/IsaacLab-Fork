@@ -250,8 +250,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Listen für Joule Heating (Optional)
     history_joule = []
     history_total_joule = []
+
+    # Listen für Kräfte und Geschwindigkeit
     history_forces = []
     history_speed = []
+    history_base_height = []
     eval_step_counter = 0
     EVAL_DURATION_STEPS = 800 
     
@@ -359,6 +362,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 current_speed = torch.norm(lin_vel[:, :2], dim=-1).mean().item()
                 history_speed.append(current_speed)
 
+                # 4. BASE HEIGHT
+                current_height = robot_entity.data.root_pos_w[:, 2].mean().item()
+                history_base_height.append(current_height)
+
                 # 4. Speichern
                 history_torque.append(torch.mean(current_torques, dim=0).cpu().numpy())
                 history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
@@ -389,14 +396,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     # Nimm die letzten 200 Einträge aus der Liste
                     last_200_forces = history_forces[-200:]
                     last_200_speeds = history_speed[-200:]
+                    last_200_heights = history_base_height[-200:]
                     
                     # Finde den größten Wert
                     max_force_in_window = max(last_200_forces)
                     max_speed_in_window = max(last_200_speeds)
+                    avg_height_in_window = sum(last_200_heights) / len(last_200_heights)
 
                     print(f"\n[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
                     print(f" -> Härtester Aufprall in den letzten 200 Steps: {max_force_in_window:.2f} N")
                     print(f" -> Höchste Geschwindigkeit in den letzten 200 Steps: {max_speed_in_window:.2f} m/s")
+                    print(f" -> Durchschn. Beckenhöhe in den letzten 200:   {avg_height_in_window:.3f} m")
                     print(f" -> Performance (RTF):    {rtf:.2f}x ({fps:.1f} Steps/s)")
                     print(f" -> Video-Schnitt:        Um das {video_speedup:.2f}-fache beschleunigen")
 

@@ -1,12 +1,13 @@
 @echo off
 echo 
 echo ===================================================
-:: Run3: thresholds 0.2, 0.25, 0.3, 0.35, action_l2 included, energy target [-0.01, -0.08], progress target 3.0
-:: threshold: 0.2
-python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run1 env.rewards.height.params.target_height=0.7
-python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run2
-python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run3 env.rewards.height.params.target_height=0.8
-:: :: threshold: 0.25
+:: Run 1 energy weight -0.0001
+python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run1 env.rewards.energy.weight=-0.0001
+:: Run 2 energy weight -0.0005
+python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run2 env.rewards.energy.weight=-0.0005
+:: Run 3 energy weight -0.001
+python scripts\reinforcement_learning\rsl_rl\train.py --task Isaac-G1-v0 --headless --run_name Run3 env.rewards.energy.weight=-0.001
+
 
 
 

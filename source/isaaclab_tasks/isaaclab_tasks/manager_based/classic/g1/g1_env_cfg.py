@@ -149,7 +149,11 @@ class RewardsCfg:
     )
 
     # --- ENERGY ---
-    energy = RewTerm(func=mdp.energy_consumption, weight=-0.00005)
+    # energy = RewTerm(func=mdp.energy_consumption, weight=-0.001)
+    # --- ENERGY divided --- 
+    energy_arms = RewTerm(func=mdp.energy_consumption_arms, weight=-0.001)
+    energy_torso = RewTerm(func=mdp.energy_consumption_torso, weight=-0.001)
+    energy_legs = RewTerm(func=mdp.energy_consumption_legs, weight=-0.001)
 
     joule_heating = RewTerm(
         func=mdp.joule_heating_energy,
@@ -216,6 +220,60 @@ class RewardsCfg:
     #     },
     # )
 
+    # Joint penetration penalty
+    body_collision = RewTerm(
+        func=mdp.body_collision_penalty,
+        weight=-25.0,     # Stark genug um Penetration zu verhindern
+        params={
+            "collision_pairs": [
+                # --- ARME vs. TORSO/KÖRPER ---
+                # Format: (link_a, link_b, min_distance_in_meters)
+                
+                # Ellbogen darf nicht in den Torso
+                ("left_elbow_pitch_link", "torso_link", 0.1),
+                ("right_elbow_pitch_link", "torso_link", 0.1),
+                
+                # Ellbogen darf nicht ans Pelvis
+                ("left_elbow_pitch_link", "pelvis", 0.1),
+                ("right_elbow_pitch_link", "pelvis", 0.1),
+                
+                # Unterarm/Hand darf nicht durch den Körper
+                ("left_elbow_roll_link", "torso_link", 0.05),
+                ("right_elbow_roll_link", "torso_link", 0.05),
+                ("left_elbow_roll_link", "pelvis", 0.05),
+                ("right_elbow_roll_link", "pelvis", 0.05),
+                
+                # Linker Arm darf nicht zum rechten Arm
+                ("left_elbow_pitch_link", "right_elbow_pitch_link", 0.10),
+                
+                # --- BEINE ---
+                # Knie dürfen nicht zusammenstoßen
+                ("left_knee_link", "right_knee_link", 0.1),
+                
+                # Knöchel dürfen nicht kreuzen
+                ("left_ankle_pitch_link", "right_ankle_pitch_link", 0.10),
+                ("left_ankle_roll_link", "right_ankle_roll_link", 0.10),
+                
+                # Oberschenkel dürfen nicht ineinander
+                ("left_hip_pitch_link", "right_hip_pitch_link", 0.1),
+
+                # --- HÄNDE vs. OBERSCHENKEL / BECKEN ---
+                # Unterarm darf nicht in den schwingenden Oberschenkel
+                ("left_elbow_roll_link", "left_hip_pitch_link", 0.04),
+                ("right_elbow_roll_link", "right_hip_pitch_link", 0.04),
+                
+                # Überkreuz (falls er die Arme vor dem Bauch kreuzt)
+                ("left_elbow_roll_link", "right_hip_pitch_link", 0.04),
+                ("right_elbow_roll_link", "left_hip_pitch_link", 0.04),
+
+                # Die Hand selbst (repräsentiert durch 'one_link') darf nicht in Becken oder Oberschenkel
+                ("left_one_link", "pelvis", 0.04),
+                ("right_one_link", "pelvis", 0.04),
+                ("left_one_link", "left_hip_pitch_link", 0.04),
+                ("right_one_link", "right_hip_pitch_link", 0.04),
+            ],
+        },
+    )
 
 @configclass
 class TerminationsCfg:

@@ -121,6 +121,79 @@ class energy_consumption(ManagerTermBase):
         return torch.sum(power, dim=-1)
     
 
+class energy_consumption_arms(ManagerTermBase):
+    """Penalty for the mechanical power consumed by arm joints only."""
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+        self.arm_indices = [
+            i for i, name in enumerate(asset.joint_names)
+            if "shoulder" in name.lower()
+            or "elbow" in name.lower()
+            or "five_joint" in name.lower()
+            or "three_joint" in name.lower()
+            or "six_joint" in name.lower()
+            or "four_joint" in name.lower()
+            or "zero_joint" in name.lower()
+            or "one_joint" in name.lower()
+            or "two_joint" in name.lower()
+        ]
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        tau = asset.data.applied_torque[:, self.arm_indices]
+        vel = asset.data.joint_vel[:, self.arm_indices]
+        power = torch.clamp(tau * vel, min=0.0)
+        return torch.sum(power, dim=-1)
+
+
+class energy_consumption_torso(ManagerTermBase):
+    """Penalty for the mechanical power consumed by the torso joint only."""
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+        self.torso_indices = [
+            i for i, name in enumerate(asset.joint_names)
+            if "torso_joint" in name.lower()
+        ]
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        tau = asset.data.applied_torque[:, self.torso_indices]
+        vel = asset.data.joint_vel[:, self.torso_indices]
+        power = torch.clamp(tau * vel, min=0.0)
+        return torch.sum(power, dim=-1)
+
+
+class energy_consumption_legs(ManagerTermBase):
+    """Penalty for the mechanical power consumed by leg joints only."""
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+        self.leg_indices = [
+            i for i, name in enumerate(asset.joint_names)
+            if "hip" in name.lower()
+            or "knee" in name.lower()
+            or "ankle" in name.lower()
+        ]
+
+    def __call__(
+        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        tau = asset.data.applied_torque[:, self.leg_indices]
+        vel = asset.data.joint_vel[:, self.leg_indices]
+        power = torch.clamp(tau * vel, min=0.0)
+        return torch.sum(power, dim=-1)
+    
+
 class joule_heating_energy(ManagerTermBase):
     """Penalty for the Joule heating in the motors, which is proportional to the square of the current.
     Assuming a simple motor model where current is proportional to torque, we can compute this as:
@@ -456,3 +529,58 @@ class cost_of_transport_gauss(ManagerTermBase):
         power_gauss = torch.exp(-0.5 * ((power - target_power) / sigma_power) ** 2)
 
         return speed_gauss * power_gauss
+
+
+
+class body_collision_penalty(ManagerTermBase):
+    """
+    Bestraft Penetration zwischen Body-Paaren basierend auf dem Abstand ihrer Positionen.
+    
+    Verhindert:
+    - Arme gehen durch den Torso
+    - Beine kreuzen sich / gehen durcheinander
+    - Ellbogen geht durch Hüfte
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
+        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
+        asset: Articulation = env.scene[asset_cfg.name]
+
+        # Body-Paare und deren Mindestabstände auflösen
+        self.pair_indices = []
+        self.min_distances = []
+
+        body_names = asset.body_names
+        for link_a, link_b, min_dist in cfg.params["collision_pairs"]:
+            try:
+                idx_a = body_names.index(link_a)
+                idx_b = body_names.index(link_b)
+                self.pair_indices.append((idx_a, idx_b))
+                self.min_distances.append(min_dist)
+            except ValueError as e:
+                print(f"[WARNUNG] Body nicht gefunden: {e}. Verfügbar: {body_names}")
+
+        self.min_distances = torch.tensor(self.min_distances, device=env.device)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        collision_pairs: list,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ) -> torch.Tensor:
+        asset: Articulation = env.scene[asset_cfg.name]
+        # body_pos_w shape: (num_envs, num_bodies, 3)
+        body_pos = asset.data.body_pos_w
+
+        penalty = torch.zeros(env.num_envs, device=env.device)
+
+        for i, (idx_a, idx_b) in enumerate(self.pair_indices):
+            pos_a = body_pos[:, idx_a, :]  # (num_envs, 3)
+            pos_b = body_pos[:, idx_b, :]  # (num_envs, 3)
+            dist = torch.norm(pos_a - pos_b, dim=-1)  # (num_envs,)
+
+            # Strafe: je näher, desto stärker (quadratisch)
+            violation = torch.clamp(self.min_distances[i] - dist, min=0.0)
+            penalty += violation ** 2
+
+        return penalty

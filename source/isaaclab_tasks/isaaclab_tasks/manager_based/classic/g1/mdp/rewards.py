@@ -183,14 +183,22 @@ class energy_consumption_legs(ManagerTermBase):
             or "knee" in name.lower()
             or "ankle" in name.lower()
         ]
+        boost_joints = cfg.params.get("joints", {})
+        self.joint_cost_weights = torch.ones(1, len(self.leg_indices), device=env.device)
+        for keyword, multiplier in boost_joints.items():
+            for j, global_idx in enumerate(self.leg_indices):
+                if keyword.lower() in asset.joint_names[global_idx].lower():
+                    self.joint_cost_weights[:, j] = multiplier
 
     def __call__(
-        self, env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+        self, env: ManagerBasedRLEnv,
+        joints: dict[str, float] = {},
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     ) -> torch.Tensor:
         asset: Articulation = env.scene[asset_cfg.name]
         tau = asset.data.applied_torque[:, self.leg_indices]
         vel = asset.data.joint_vel[:, self.leg_indices]
-        power = torch.clamp(tau * vel, min=0.0)
+        power = torch.clamp(tau * vel, min=0.0) * self.joint_cost_weights
         return torch.sum(power, dim=-1)
     
 
@@ -426,7 +434,7 @@ class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
         return torch.sum(self.fatigue, dim=-1)
     
 
-def feet_air_time_mujoco(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+def feet_air_time(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """Rewards the agent for taking steps that are longer than a threshold, based on G1 contact sensor data."""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     
@@ -443,10 +451,28 @@ def feet_air_time_mujoco(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: S
     # Belohne die Zeit, aber kappe sie beim threshold
     reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
     reward = torch.clamp(reward, max=threshold)
-    
-    # KEIN COMMAND MANAGER MEHR HIER. 
-    # Der Reward wird einfach direkt zurückgegeben.
+
     return reward
+
+
+def feet_air_time_2(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Rewards the agent for taking steps that are longer than a threshold.
+    
+    Belohnt Air Time pro Fuß unabhängig — Doppelstützphasen sind erlaubt.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    
+    in_contact = contact_time > 0.0
+    
+    # Belohne die Air Time jedes Fußes einzeln, gekappt beim threshold
+    # Nur Füße die gerade in der Luft sind bekommen Reward
+    reward_per_foot = torch.clamp(air_time, max=threshold) * (~in_contact).float()
+    
+    # Summiere über beide Füße
+    return torch.sum(reward_per_foot, dim=-1)
 
 
 def feet_slide(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -483,6 +509,18 @@ def feet_contact_limit(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, max_f
     penalty = torch.sum(excess_force, dim=-1)
     
     return penalty
+
+
+def roll_penalty(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize rolling (lateral sway) of the base."""
+    asset = env.scene[asset_cfg.name]
+    quat = asset.data.root_quat_w
+    # euler_xyz_from_quat gibt (roll, pitch, yaw) zurück
+    roll = math_utils.euler_xyz_from_quat(quat)[0]
+    return torch.square(roll)
 
 
 class cost_of_transport_gauss(ManagerTermBase):
@@ -529,7 +567,6 @@ class cost_of_transport_gauss(ManagerTermBase):
         power_gauss = torch.exp(-0.5 * ((power - target_power) / sigma_power) ** 2)
 
         return speed_gauss * power_gauss
-
 
 
 class body_collision_penalty(ManagerTermBase):

@@ -39,7 +39,7 @@ class MySceneCfg(InteractiveSceneCfg):
     )
 
     # robot
-    robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot = G1_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     # sensor
     robot.spawn = robot.spawn.replace(activate_contact_sensors=True)
@@ -125,11 +125,11 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # --- BASIS ---
-    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 1.0})
+    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 0.90})
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # -0.01
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0)
+    # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0)
     # height = RewTerm(func=mdp.track_base_height, weight=0.5, params={"target_height": 0.74})
 
     joint_pos_limits = RewTerm(
@@ -153,19 +153,23 @@ class RewardsCfg:
     # --- ENERGY divided --- 
     energy_arms = RewTerm(func=mdp.energy_consumption_arms, weight=-0.001)
     energy_torso = RewTerm(func=mdp.energy_consumption_torso, weight=-0.001)
-    energy_legs = RewTerm(func=mdp.energy_consumption_legs, weight=-0.001)
+    energy_legs = RewTerm(
+        func=mdp.energy_consumption_legs,
+        weight=-0.001,
+        params={"joints": {"knee": 2.0, "hip_yaw": 2.0}},
+    )
 
     joule_heating = RewTerm(
         func=mdp.joule_heating_energy,
         weight=-0.00001,
         params={
             "gear_ratio": {
-                "torso_joint": 88.0,       
-                ".*_hip_.*": 88.0,         
-                ".*_knee_joint": 139.0,    
-                ".*_ankle_.*": 40.0,       
-                ".*_shoulder_.*": 21.0,  
-                ".*_elbow_.*": 21.0,    
+                "torso_joint": 88.0,
+                ".*_hip_.*": 88.0,
+                ".*_knee_joint": 139.0,
+                ".*_ankle_.*": 40.0,
+                ".*_shoulder_.*": 21.0,
+                ".*_elbow_.*": 21.0,
             }
         },
     )
@@ -178,14 +182,14 @@ class RewardsCfg:
         params={
             "exponent": 2,
             "buildup_rate": 1.0,
-            "recovery_rate": 0.5, 
+            "recovery_rate": 0.5,
             "tau_max": {
-                "torso_joint": 88.0,       
-                ".*_hip_.*": 88.0,         
+                "torso_joint": 88.0,
+                ".*_hip_.*": 88.0,
                 ".*_knee_joint": 139.0,    
-                ".*_ankle_.*": 40.0,       
-                ".*_shoulder_.*": 21.0,  
-                ".*_elbow_.*": 21.0,       
+                ".*_ankle_.*": 40.0,
+                ".*_shoulder_.*": 21.0,
+                ".*_elbow_.*": 21.0,
             },
         },
     )
@@ -194,11 +198,11 @@ class RewardsCfg:
 
     # --- FEET ---
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_mujoco,  
-        weight=0.25,                
+        func=mdp.feet_air_time,
+        weight=0.25,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]),
-            "threshold": 0.25,       
+            "threshold": 0.4,  # x Sekunden Luftzeit als Schwelle für Belohnung
         },
     )
 
@@ -213,7 +217,7 @@ class RewardsCfg:
 
     # feet_impact_penalty = RewTerm(
     #     func=mdp.feet_contact_limit, 
-    #     weight=-0.001, 
+    #     weight=-0.001,
     #     params={
     #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]), 
     #         "max_force": 600.0,
@@ -226,51 +230,60 @@ class RewardsCfg:
         weight=-25.0,     # Stark genug um Penetration zu verhindern
         params={
             "collision_pairs": [
-                # --- ARME vs. TORSO/KÖRPER ---
-                # Format: (link_a, link_b, min_distance_in_meters)
+                # ==========================================
+                # 1. ARME vs. OBERKÖRPER (Torso & Pelvis)
+                # ==========================================
                 
-                # Ellbogen darf nicht in den Torso
-                ("left_elbow_pitch_link", "torso_link", 0.1),
-                ("right_elbow_pitch_link", "torso_link", 0.1),
-                
-                # Ellbogen darf nicht ans Pelvis
-                ("left_elbow_pitch_link", "pelvis", 0.1),
-                ("right_elbow_pitch_link", "pelvis", 0.1),
-                
-                # Unterarm/Hand darf nicht durch den Körper
+                # Ellbogen (Oberer Teil)
+                ("left_elbow_pitch_link", "torso_link", 0.05),
+                ("right_elbow_pitch_link", "torso_link", 0.05),
+                ("left_elbow_pitch_link", "pelvis", 0.05),
+                ("right_elbow_pitch_link", "pelvis", 0.05),
+
+                # Unterarm (Unterer Teil)
                 ("left_elbow_roll_link", "torso_link", 0.05),
                 ("right_elbow_roll_link", "torso_link", 0.05),
                 ("left_elbow_roll_link", "pelvis", 0.05),
                 ("right_elbow_roll_link", "pelvis", 0.05),
-                
-                # Linker Arm darf nicht zum rechten Arm
-                ("left_elbow_pitch_link", "right_elbow_pitch_link", 0.10),
-                
-                # --- BEINE ---
-                # Knie dürfen nicht zusammenstoßen
-                ("left_knee_link", "right_knee_link", 0.1),
-                
-                # Knöchel dürfen nicht kreuzen
-                ("left_ankle_pitch_link", "right_ankle_pitch_link", 0.10),
-                ("left_ankle_roll_link", "right_ankle_roll_link", 0.10),
-                
-                # Oberschenkel dürfen nicht ineinander
-                ("left_hip_pitch_link", "right_hip_pitch_link", 0.1),
 
-                # --- HÄNDE vs. OBERSCHENKEL / BECKEN ---
-                # Unterarm darf nicht in den schwingenden Oberschenkel
-                ("left_elbow_roll_link", "left_hip_pitch_link", 0.04),
-                ("right_elbow_roll_link", "right_hip_pitch_link", 0.04),
-                
-                # Überkreuz (falls er die Arme vor dem Bauch kreuzt)
-                ("left_elbow_roll_link", "right_hip_pitch_link", 0.04),
-                ("right_elbow_roll_link", "left_hip_pitch_link", 0.04),
+                # Hände (Fingerspitzen/Handwurzel)
+                ("left_one_link", "torso_link", 0.05),
+                ("right_one_link", "torso_link", 0.05),
+                ("left_one_link", "pelvis", 0.05),
+                ("right_one_link", "pelvis", 0.05),
 
-                # Die Hand selbst (repräsentiert durch 'one_link') darf nicht in Becken oder Oberschenkel
-                ("left_one_link", "pelvis", 0.04),
-                ("right_one_link", "pelvis", 0.04),
-                ("left_one_link", "left_hip_pitch_link", 0.04),
-                ("right_one_link", "right_hip_pitch_link", 0.04),
+                # ==========================================
+                # 2. ARME vs. ALLE HÜFT-LINKS (Yaw, Roll, Pitch)
+                # ==========================================
+                
+                # --- Linke Seite ---
+                # Unterarm gegen linke Hüft-Komponenten
+                ("left_elbow_roll_link", "left_hip_yaw_link", 0.05),
+                ("left_elbow_roll_link", "left_hip_roll_link", 0.05),
+                ("left_elbow_roll_link", "left_hip_pitch_link", 0.05),
+                
+                # Linke Hand gegen linke Hüft-Komponenten
+                ("left_one_link", "left_hip_yaw_link", 0.05),
+                ("left_one_link", "left_hip_roll_link", 0.05),
+                ("left_one_link", "left_hip_pitch_link", 0.05),
+
+                # --- Rechte Seite ---
+                # Unterarm gegen rechte Hüft-Komponenten
+                ("right_elbow_roll_link", "right_hip_yaw_link", 0.05),
+                ("right_elbow_roll_link", "right_hip_roll_link", 0.05),
+                ("right_elbow_roll_link", "right_hip_pitch_link", 0.05),
+                
+                # Rechte Hand gegen rechte Hüft-Komponenten
+                ("right_one_link", "right_hip_yaw_link", 0.05),
+                ("right_one_link", "right_hip_roll_link", 0.05),
+                ("right_one_link", "right_hip_pitch_link", 0.05),
+
+                # ==========================================
+                # 3. ÜBERKREUZ (Arme vor dem Bauch)
+                # ==========================================
+                # Falls der Roboter beim Rennen die Arme diagonal vor den Körper reißt
+                ("left_one_link", "right_hip_pitch_link", 0.05),
+                ("right_one_link", "left_hip_pitch_link", 0.05),
             ],
         },
     )

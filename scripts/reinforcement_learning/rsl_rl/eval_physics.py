@@ -251,10 +251,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     history_joule = []
     history_total_joule = []
 
-    # Listen für Kräfte und Geschwindigkeit
+    # Listen für Kräfte, Geschwindigkeit, Höhe und Feet Air Time
     history_forces = []
     history_speed = []
     history_base_height = []
+    history_feet_air_time = []
+
     eval_step_counter = 0
     EVAL_DURATION_STEPS = 800 
     
@@ -366,17 +368,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 current_height = robot_entity.data.root_pos_w[:, 2].mean().item()
                 history_base_height.append(current_height)
 
-                # 4. Speichern
+                # 5. Speichern (Torque, Vel, Power)
                 history_torque.append(torch.mean(current_torques, dim=0).cpu().numpy())
                 history_vel.append(torch.mean(current_vels, dim=0).cpu().numpy())
                 history_power.append(torch.mean(current_power, dim=0).cpu().numpy())
                 history_total_power.append(torch.mean(total_power_step).cpu().numpy())
 
+                # 6. CONTACT SENSOR (einmal holen, für Forces UND Feet Air Time)
                 contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
-                # Hole die Kraft in Z-Richtung (oder die Norm)
+
+                # 6a. CONTACT FORCES
                 forces = contact_sensor.data.net_forces_w_history[:, :, :, :].norm(dim=-1).max(dim=1)[0]
                 current_max_force = forces.max().item()
                 history_forces.append(current_max_force)
+
+                # 6b. FEET AIR TIME
+                air_time = contact_sensor.data.current_air_time
+                contact_time = contact_sensor.data.current_contact_time
+                in_contact = contact_time > 0.0
+                in_mode_time = torch.where(in_contact, contact_time, air_time)
+                single_stance = torch.sum(in_contact.int(), dim=-1) == 1
+                step_air_time = torch.min(
+                    torch.where(single_stance.unsqueeze(-1), in_mode_time, torch.zeros_like(in_mode_time)),
+                    dim=-1
+                )[0]
+                avg_air_time = step_air_time.mean().item()
+                history_feet_air_time.append(avg_air_time)
 
                 eval_step_counter += 1  
                 
@@ -393,20 +410,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     
                     rtf_last_window_time = current_time
 
-                    # Nimm die letzten 200 Einträge aus der Liste
+                    # Nimm die letzten 200 Einträge aus den Listen
                     last_200_forces = history_forces[-200:]
                     last_200_speeds = history_speed[-200:]
                     last_200_heights = history_base_height[-200:]
+                    last_200_air_times = history_feet_air_time[-200:]
                     
-                    # Finde den größten Wert
+                    # Statistiken berechnen
                     max_force_in_window = max(last_200_forces)
                     max_speed_in_window = max(last_200_speeds)
                     avg_height_in_window = sum(last_200_heights) / len(last_200_heights)
+                    avg_air_time_in_window = sum(last_200_air_times) / len(last_200_air_times)
 
                     print(f"\n[Eval] {eval_step_counter}/{EVAL_DURATION_STEPS} Steps...")
                     print(f" -> Härtester Aufprall in den letzten 200 Steps: {max_force_in_window:.2f} N")
                     print(f" -> Höchste Geschwindigkeit in den letzten 200 Steps: {max_speed_in_window:.2f} m/s")
                     print(f" -> Durchschn. Beckenhöhe in den letzten 200:   {avg_height_in_window:.3f} m")
+                    print(f" -> Durchschn. Feet Air Time in den letzten 200: {avg_air_time_in_window:.3f} s")
                     print(f" -> Performance (RTF):    {rtf:.2f}x ({fps:.1f} Steps/s)")
                     print(f" -> Video-Schnitt:        Um das {video_speedup:.2f}-fache beschleunigen")
 
@@ -430,6 +450,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 arr_total_power = np.array(history_total_power)
                 arr_forces = np.array(history_forces)
                 arr_speed = np.array(history_speed)
+                arr_feet_air_time = np.array(history_feet_air_time)
                 
                 # Dictionary für np.savez vorbereiten
                 save_data = {
@@ -439,7 +460,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "total_power": arr_total_power,
                     "joint_names": np.array(joint_names),
                     "forces": arr_forces,
-                    "speed": arr_speed
+                    "speed": arr_speed,
+                    "feet_air_time": arr_feet_air_time,
                 }
 
                 # Joule-Daten nur speichern, wenn berechnet
@@ -455,10 +477,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 
                 print(f"\nDaten gespeichert unter:\n-> {save_filename}")
                 print(f"\nFormat der Datei:")
-                print(f" - torque:      {arr_torque.shape} (Steps x Joints)")
-                print(f" - power:       {arr_power.shape}")
+                print(f" - torque:         {arr_torque.shape} (Steps x Joints)")
+                print(f" - power:          {arr_power.shape}")
+                print(f" - feet_air_time:  {arr_feet_air_time.shape}")
                 if calculate_joule_heating:
-                    print(f" - joule:       {save_data['joule'].shape}")
+                    print(f" - joule:          {save_data['joule'].shape}")
                 print("="*60 + "\n")
                 
         if args_cli.video:

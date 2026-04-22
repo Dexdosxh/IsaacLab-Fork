@@ -125,11 +125,11 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # --- BASIS ---
-    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 0.90})
+    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 0.92})
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # -0.01
-    # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.0)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
     # height = RewTerm(func=mdp.track_base_height, weight=0.5, params={"target_height": 0.74})
 
     joint_pos_limits = RewTerm(
@@ -156,7 +156,7 @@ class RewardsCfg:
     energy_legs = RewTerm(
         func=mdp.energy_consumption_legs,
         weight=-0.001,
-        params={"joints": {"knee": 2.0, "hip_yaw": 2.0}},
+        params={"joints": {"knee": 2.8, "hip_yaw": 2.0}},
     )
 
     joule_heating = RewTerm(
@@ -226,64 +226,69 @@ class RewardsCfg:
 
     # Joint penetration penalty
     body_collision = RewTerm(
-        func=mdp.body_collision_penalty,
-        weight=-25.0,     # Stark genug um Penetration zu verhindern
-        params={
-            "collision_pairs": [
-                # ==========================================
-                # 1. ARME vs. OBERKÖRPER (Torso & Pelvis)
-                # ==========================================
-                
-                # Ellbogen (Oberer Teil)
-                ("left_elbow_pitch_link", "torso_link", 0.05),
-                ("right_elbow_pitch_link", "torso_link", 0.05),
-                ("left_elbow_pitch_link", "pelvis", 0.05),
-                ("right_elbow_pitch_link", "pelvis", 0.05),
+    func=mdp.body_collision_penalty,
+    weight=-25.0,
+    params={
+        "collision_pairs": [
+            # ==========================================
+            # LINKE HAND (alle möglichen Links) vs. LINKE HÜFTE
+            # ==========================================
+            ("left_zero_link",  "left_hip_yaw_link",   0.05),
+            ("left_zero_link",  "left_hip_roll_link",  0.05),
+            ("left_zero_link",  "left_hip_pitch_link", 0.05),
+            ("left_one_link",   "left_hip_yaw_link",   0.05),
+            ("left_one_link",   "left_hip_roll_link",  0.05),
+            ("left_one_link",   "left_hip_pitch_link", 0.05),
+            ("left_two_link",   "left_hip_yaw_link",   0.05),
+            ("left_two_link",   "left_hip_roll_link",  0.05),
+            ("left_two_link",   "left_hip_pitch_link", 0.05),
+            ("left_three_link", "left_hip_yaw_link",   0.05),
+            ("left_three_link", "left_hip_roll_link",  0.05),
+            ("left_three_link", "left_hip_pitch_link", 0.05),
+            ("left_four_link",  "left_hip_yaw_link",   0.05),
+            ("left_four_link",  "left_hip_roll_link",  0.05),
+            ("left_four_link",  "left_hip_pitch_link", 0.05),
+            ("left_five_link",  "left_hip_yaw_link",   0.05),
+            ("left_five_link",  "left_hip_roll_link",  0.05),
+            ("left_five_link",  "left_hip_pitch_link", 0.05),
+            ("left_six_link",   "left_hip_yaw_link",   0.05),
+            ("left_six_link",   "left_hip_roll_link",  0.05),
+            ("left_six_link",   "left_hip_pitch_link", 0.05),
 
-                # Unterarm (Unterer Teil)
-                ("left_elbow_roll_link", "torso_link", 0.05),
-                ("right_elbow_roll_link", "torso_link", 0.05),
-                ("left_elbow_roll_link", "pelvis", 0.05),
-                ("right_elbow_roll_link", "pelvis", 0.05),
+            # ==========================================
+            # RECHTE HAND (alle möglichen Links) vs. RECHTE HÜFTE
+            # ==========================================
+            ("right_zero_link",  "right_hip_yaw_link",   0.05),
+            ("right_zero_link",  "right_hip_roll_link",  0.05),
+            ("right_zero_link",  "right_hip_pitch_link", 0.05),
+            ("right_one_link",   "right_hip_yaw_link",   0.05),
+            ("right_one_link",   "right_hip_roll_link",  0.05),
+            ("right_one_link",   "right_hip_pitch_link", 0.05),
+            ("right_two_link",   "right_hip_yaw_link",   0.05),
+            ("right_two_link",   "right_hip_roll_link",  0.05),
+            ("right_two_link",   "right_hip_pitch_link", 0.05),
+            ("right_three_link", "right_hip_yaw_link",   0.05),
+            ("right_three_link", "right_hip_roll_link",  0.05),
+            ("right_three_link", "right_hip_pitch_link", 0.05),
+            ("right_four_link",  "right_hip_yaw_link",   0.05),
+            ("right_four_link",  "right_hip_roll_link",  0.05),
+            ("right_four_link",  "right_hip_pitch_link", 0.05),
+            ("right_five_link",  "right_hip_yaw_link",   0.05),
+            ("right_five_link",  "right_hip_roll_link",  0.05),
+            ("right_five_link",  "right_hip_pitch_link", 0.05),
+            ("right_six_link",   "right_hip_yaw_link",   0.05),
+            ("right_six_link",   "right_hip_roll_link",  0.05),
+            ("right_six_link",   "right_hip_pitch_link", 0.05),
 
-                # Hände (Fingerspitzen/Handwurzel)
-                ("left_one_link", "torso_link", 0.05),
-                ("right_one_link", "torso_link", 0.05),
-                ("left_one_link", "pelvis", 0.05),
-                ("right_one_link", "pelvis", 0.05),
-
-                # ==========================================
-                # 2. ARME vs. ALLE HÜFT-LINKS (Yaw, Roll, Pitch)
-                # ==========================================
-                
-                # --- Linke Seite ---
-                # Unterarm gegen linke Hüft-Komponenten
-                ("left_elbow_roll_link", "left_hip_yaw_link", 0.05),
-                ("left_elbow_roll_link", "left_hip_roll_link", 0.05),
-                ("left_elbow_roll_link", "left_hip_pitch_link", 0.05),
-                
-                # Linke Hand gegen linke Hüft-Komponenten
-                ("left_one_link", "left_hip_yaw_link", 0.05),
-                ("left_one_link", "left_hip_roll_link", 0.05),
-                ("left_one_link", "left_hip_pitch_link", 0.05),
-
-                # --- Rechte Seite ---
-                # Unterarm gegen rechte Hüft-Komponenten
-                ("right_elbow_roll_link", "right_hip_yaw_link", 0.05),
-                ("right_elbow_roll_link", "right_hip_roll_link", 0.05),
-                ("right_elbow_roll_link", "right_hip_pitch_link", 0.05),
-                
-                # Rechte Hand gegen rechte Hüft-Komponenten
-                ("right_one_link", "right_hip_yaw_link", 0.05),
-                ("right_one_link", "right_hip_roll_link", 0.05),
-                ("right_one_link", "right_hip_pitch_link", 0.05),
-
-                # ==========================================
-                # 3. ÜBERKREUZ (Arme vor dem Bauch)
-                # ==========================================
-                # Falls der Roboter beim Rennen die Arme diagonal vor den Körper reißt
-                ("left_one_link", "right_hip_pitch_link", 0.05),
-                ("right_one_link", "left_hip_pitch_link", 0.05),
+            # ==========================================
+            # ÜBERKREUZ
+            # ==========================================
+            ("left_one_link",   "right_hip_pitch_link", 0.05),
+            ("right_one_link",  "left_hip_pitch_link",  0.05),
+            ("left_zero_link",  "right_hip_pitch_link", 0.05),
+            ("right_zero_link", "left_hip_pitch_link",  0.05),
+            ("left_two_link",   "right_hip_pitch_link", 0.05),
+            ("right_two_link",  "left_hip_pitch_link",  0.05),
             ],
         },
     )

@@ -9,21 +9,17 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-class G1PPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class G1_29DOFPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     rewards_expect = {
-        "progress": 0.82, 
-        # "energy": [-0.08, -0.8],
-        # "energy_arms": [-0.005, -0.05], 
-        # "energy_torso": [-0.02, -0.2],  
-        "energy_legs": [-0.08, -1.2],  
-        #"joule_heating": 0.0,
+        "progress": 0.82,
+        "energy_legs": [-0.08, -1.2],
     }
     gage_init_std = 0.5
     gage_min_std = 0.25
     num_steps_per_env = 32
     max_iterations = 800
     save_interval = 100
-    experiment_name = "g1"
+    experiment_name = "g1_29dof"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=0.5,
         actor_obs_normalization=False,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import torch
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,15 @@ from . import observations as obs
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def _build_joint_mask(joint_names: list[str], exclude_patterns, device) -> torch.Tensor:
+    """Returns a (1, num_joints) mask that is 0 for joints matching any exclude pattern, 1 otherwise."""
+    mask = torch.ones(1, len(joint_names), device=device)
+    for i, name in enumerate(joint_names):
+        if any(re.search(pat, name) for pat in exclude_patterns):
+            mask[0, i] = 0.0
+    return mask
 
 
 def upright_posture_bonus(
@@ -51,12 +61,14 @@ class joint_pos_limits_penalty_ratio(ManagerTermBase):
         )
         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
+        self.joint_mask = _build_joint_mask(asset.joint_names, cfg.params.get("exclude_joints", []), env.device)
 
     def __call__(
         self,
         env: ManagerBasedRLEnv,
         threshold: float,
         gear_ratio: dict[str, float],
+        exclude_joints: list[str] = [],
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     ) -> torch.Tensor:
         asset: Articulation = env.scene[asset_cfg.name]
@@ -64,7 +76,7 @@ class joint_pos_limits_penalty_ratio(ManagerTermBase):
             asset.data.joint_pos, asset.data.soft_joint_pos_limits[..., 0], asset.data.soft_joint_pos_limits[..., 1]
         )
         violation_amount = (torch.abs(joint_pos_scaled) - threshold) / (1 - threshold)
-        violation_amount = violation_amount * self.gear_ratio_scaled
+        violation_amount = violation_amount * self.gear_ratio_scaled * self.joint_mask
         return torch.sum((torch.abs(joint_pos_scaled) > threshold) * violation_amount, dim=-1)
 
 
@@ -101,15 +113,13 @@ class energy_consumption_arms(ManagerTermBase):
     def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
         asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
         asset: Articulation = env.scene[asset_cfg.name]
-        # 29-DOF: shoulder, elbow (single), wrist, index, middle, thumb fingers
+        # Arm group: shoulder, elbow (single), wrist. Fingers excluded — they use
+        # high-stiffness ImplicitActuatorCfg which causes torque spikes unrelated to locomotion.
         self.arm_indices = [
             i for i, name in enumerate(asset.joint_names)
             if "shoulder" in name.lower()
             or "elbow" in name.lower()
             or "wrist" in name.lower()
-            or "index" in name.lower()
-            or "middle" in name.lower()
-            or "thumb" in name.lower()
         ]
 
     def __call__(
@@ -191,13 +201,18 @@ class joule_heating_energy(ManagerTermBase):
         )
         self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
         self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
+        self.joint_mask = _build_joint_mask(asset.joint_names, cfg.params.get("exclude_joints") or [], env.device)
 
     def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+        self,
+        env: ManagerBasedRLEnv,
+        gear_ratio: dict[str, float],
+        exclude_joints: list[str] = [],
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     ) -> torch.Tensor:
         asset: Articulation = env.scene[asset_cfg.name]
         tau = asset.data.applied_torque
-        base_heating = (tau / self.gear_ratio_scaled) ** 2
+        base_heating = (tau / self.gear_ratio_scaled) ** 2 * self.joint_mask
         return torch.sum(base_heating, dim=-1)
 
 
@@ -306,6 +321,7 @@ class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
         self.tau_max = torch.clamp(self.tau_max, min=1e-6)
         self.fatigue = torch.zeros(env.num_envs, asset.num_joints, device=env.device)
         self.dt = float(env.step_dt)
+        self.joint_mask = _build_joint_mask(asset.joint_names, cfg.params.get("exclude_joints") or [], env.device)
 
     def __call__(
         self,
@@ -314,19 +330,20 @@ class joint_torque_fatigue_penalty_per_joint_uniform(ManagerTermBase):
         tau_max: dict[str, float],
         buildup_rate: float,
         recovery_rate: float,
+        exclude_joints: list[str] = [],
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     ) -> torch.Tensor:
         asset: Articulation = env.scene[asset_cfg.name]
         tau = asset.data.applied_torque
         rel_tau = torch.abs(tau) / self.tau_max
-        cost_j = rel_tau ** float(exponent)
+        cost_j = rel_tau ** float(exponent) * self.joint_mask
         self.fatigue = torch.clamp(self.fatigue - float(recovery_rate) * self.dt, min=0.0)
         self.fatigue = self.fatigue + float(buildup_rate) * cost_j * self.dt
         if hasattr(env, "termination_manager"):
             dones = env.termination_manager.dones
             if dones is not None:
                 self.fatigue = torch.where(dones.unsqueeze(-1), torch.zeros_like(self.fatigue), self.fatigue)
-        return torch.sum(self.fatigue, dim=-1)
+        return torch.sum(self.fatigue * self.joint_mask, dim=-1)
 
 
 def feet_air_time(env: ManagerBasedRLEnv, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:

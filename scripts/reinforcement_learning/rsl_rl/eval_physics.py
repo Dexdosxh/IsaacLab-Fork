@@ -88,6 +88,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 # PLACEHOLDER: Extension template (do not remove this comment)
 # --- NEU: DER WRAPPER FÜR EVALUATION ---
 class ArmTrainingWrapper(gym.Wrapper):
@@ -238,6 +239,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # --- EVALUATION SETUP ---
     # ---------------------------------------------------------
     robot_entity = env.unwrapped.scene["robot"]
+    print("[INFO] Erstelle CoM Visualisierung...")
+    com_marker_cfg = VisualizationMarkersCfg(
+        prim_path="/World/Visuals/CoMMarker",
+        markers={
+            "com_sphere": sim_utils.SphereCfg(
+                radius=0.08,  # 8cm große rote Kugel
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),  # ROT
+            ),
+        }
+    )
+    com_marker = VisualizationMarkers(com_marker_cfg)
     joint_names = robot_entity.joint_names
     num_joints = len(joint_names)
 
@@ -256,6 +268,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     history_speed = []
     history_base_height = []
     history_feet_air_time = []
+    history_left_foot_forces = []
+    history_right_foot_forces = []
+
+    # NEU: Knie-Positionen
+    history_left_knee_pos = []
+    history_right_knee_pos = []
 
     eval_step_counter = 0
     EVAL_DURATION_STEPS = 800 
@@ -308,6 +326,64 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # --- EVALUATION SETUP (END) ---
     # ---------------------------------------------------------
 
+    # Massen einmalig auf GPU cachen (ändern sich nie)
+    _body_masses = robot_entity.data.default_mass.to(robot_entity.device)  # (num_envs, num_bodies)
+
+    # Fuß-Indizes für Contact Sensor ermitteln
+    _contact_sensor = env.unwrapped.scene.sensors["contact_forces"]
+    _body_names = getattr(_contact_sensor, "body_names", [])
+    left_foot_idx = next(
+        (i for i, n in enumerate(_body_names) if "left" in n.lower() and ("foot" in n.lower() or "ankle" in n.lower())),
+        None,
+    )
+    right_foot_idx = next(
+        (i for i, n in enumerate(_body_names) if "right" in n.lower() and ("foot" in n.lower() or "ankle" in n.lower())),
+        None,
+    )
+    if left_foot_idx is None or right_foot_idx is None:
+        print(f"[WARNUNG] Fuß-Bodies nicht gefunden in: {_body_names}. Separates Foot-Force Tracking deaktiviert.")
+        track_foot_forces = False
+    else:
+        print(f"[INFO] Linker Fuß:  '{_body_names[left_foot_idx]}' (idx={left_foot_idx})")
+        print(f"[INFO] Rechter Fuß: '{_body_names[right_foot_idx]}' (idx={right_foot_idx})")
+        track_foot_forces = True
+
+    # Knie-Body-Indizes finden
+    _robot_body_names = robot_entity.body_names
+    left_knee_idx = None
+    right_knee_idx = None
+    for i, name in enumerate(_robot_body_names):
+        if "left" in name.lower() and "knee" in name.lower():
+            left_knee_idx = i
+            print(f"[INFO] Linkes Knie:  '{name}' (idx={i})")
+        if "right" in name.lower() and "knee" in name.lower():
+            right_knee_idx = i
+            print(f"[INFO] Rechtes Knie: '{name}' (idx={i})")
+    if left_knee_idx is None or right_knee_idx is None:
+        print(f"[WARNUNG] Knie nicht gefunden in Bodies: {_robot_body_names}. Knie-Tracking deaktiviert.")
+        track_knees = False
+    else:
+        track_knees = True
+        print("[INFO] Knie-Tracking aktiviert.")
+        left_knee_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/World/Visuals/LeftKneeMarker",
+            markers={
+                "sphere": sim_utils.SphereCfg(
+                    radius=0.05,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),  # GRÜN
+                ),
+            }
+        ))
+        right_knee_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/World/Visuals/RightKneeMarker",
+            markers={
+                "sphere": sim_utils.SphereCfg(
+                    radius=0.05,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.4, 1.0)),  # BLAU
+                ),
+            }
+        ))
+
     # reset environment
     obs = env.get_observations()
     timestep = 0
@@ -334,7 +410,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
-            
+
+            # System-level CoM: mass-weighted average over all bodies
+            body_com_pos = robot_entity.data.body_com_pos_w                              # (num_envs, num_bodies, 3)
+            com_pos = (_body_masses.unsqueeze(-1) * body_com_pos).sum(dim=1) / _body_masses.sum(dim=-1, keepdim=True)  # (num_envs, 3)
+            com_marker.visualize(translations=com_pos)
+
+            if track_knees:
+                left_knee_marker.visualize(translations=robot_entity.data.body_pos_w[0:1, left_knee_idx, :])
+                right_knee_marker.visualize(translations=robot_entity.data.body_pos_w[0:1, right_knee_idx, :])
+
             # ---------------------------------------------------------
             # --- EVALUATION LOOP ---
             # ---------------------------------------------------------
@@ -382,7 +467,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 current_max_force = forces.max().item()
                 history_forces.append(current_max_force)
 
-                # 6b. FEET AIR TIME
+                # 6b. SEPARATE FUßKRÄFTE (links / rechts)
+                if track_foot_forces:
+                    history_left_foot_forces.append(forces[:, left_foot_idx].mean().item())
+                    history_right_foot_forces.append(forces[:, right_foot_idx].mean().item())
+
+                # 6c. FEET AIR TIME
                 air_time = contact_sensor.data.current_air_time
                 contact_time = contact_sensor.data.current_contact_time
                 in_contact = contact_time > 0.0
@@ -395,7 +485,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 avg_air_time = step_air_time.mean().item()
                 history_feet_air_time.append(avg_air_time)
 
-                eval_step_counter += 1  
+                # 7. KNIE-POSITIONEN
+                if track_knees:
+                    history_left_knee_pos.append(robot_entity.data.body_pos_w[0, left_knee_idx, :].cpu().numpy())
+                    history_right_knee_pos.append(robot_entity.data.body_pos_w[0, right_knee_idx, :].cpu().numpy())
+
+                eval_step_counter += 1
                 
                 # --- OUTPUT ALLE 200 SCHRITTE (INKL. RTF) ---
                 if eval_step_counter % 200 == 0:
@@ -427,6 +522,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     print(f" -> Höchste Geschwindigkeit in den letzten 200 Steps: {max_speed_in_window:.2f} m/s")
                     print(f" -> Durchschn. Beckenhöhe in den letzten 200:   {avg_height_in_window:.3f} m")
                     print(f" -> Durchschn. Feet Air Time in den letzten 200: {avg_air_time_in_window:.3f} s")
+                    if track_foot_forces:
+                        last_200_left = history_left_foot_forces[-200:]
+                        last_200_right = history_right_foot_forces[-200:]
+                        print(f" -> Avg. Kontaktkraft Linker Fuß:  {sum(last_200_left)/len(last_200_left):.2f} N")
+                        print(f" -> Avg. Kontaktkraft Rechter Fuß: {sum(last_200_right)/len(last_200_right):.2f} N")
                     print(f" -> Performance (RTF):    {rtf:.2f}x ({fps:.1f} Steps/s)")
                     print(f" -> Video-Schnitt:        Um das {video_speedup:.2f}-fache beschleunigen")
 
@@ -464,10 +564,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     "feet_air_time": arr_feet_air_time,
                 }
 
+                # Fußkräfte nur speichern, wenn erkannt
+                if track_foot_forces:
+                    save_data["left_foot_forces"] = np.array(history_left_foot_forces)
+                    save_data["right_foot_forces"] = np.array(history_right_foot_forces)
+
                 # Joule-Daten nur speichern, wenn berechnet
                 if calculate_joule_heating:
                     save_data["joule"] = np.array(history_joule)
                     save_data["total_joule"] = np.array(history_total_joule)
+
+                # Knie-Positionen nur speichern, wenn getrackt
+                if track_knees:
+                    save_data["left_knee_pos"] = np.array(history_left_knee_pos)
+                    save_data["right_knee_pos"] = np.array(history_right_knee_pos)
 
                 save_filename = os.path.join(log_dir, "evaluation_data.npz")
                 eval_step_counter += 1  # Verhindert mehrfaches Speichern
@@ -480,8 +590,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 print(f" - torque:         {arr_torque.shape} (Steps x Joints)")
                 print(f" - power:          {arr_power.shape}")
                 print(f" - feet_air_time:  {arr_feet_air_time.shape}")
+                if track_foot_forces:
+                    print(f" - left_foot_forces:  {save_data['left_foot_forces'].shape}")
+                    print(f" - right_foot_forces: {save_data['right_foot_forces'].shape}")
                 if calculate_joule_heating:
                     print(f" - joule:          {save_data['joule'].shape}")
+                if track_knees:
+                    print(f" - left_knee_pos:  {save_data['left_knee_pos'].shape}")
+                    print(f" - right_knee_pos: {save_data['right_knee_pos'].shape}")
                 print("="*60 + "\n")
                 
         if args_cli.video:

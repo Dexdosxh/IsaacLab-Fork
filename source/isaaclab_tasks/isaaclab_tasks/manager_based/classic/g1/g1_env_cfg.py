@@ -125,9 +125,9 @@ class RewardsCfg:
     """Reward terms for the MDP."""
 
     # --- BASIS ---
-    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 0.92})
+    progress = RewTerm(func=mdp.hybrid_forward_speed, weight=1.0, params={"target_speed": 1.0})
     alive = RewTerm(func=mdp.is_alive, weight=2.0)
-    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.93})
+    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.94})
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # -0.01
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
     # height = RewTerm(func=mdp.track_base_height, weight=0.5, params={"target_height": 0.74})
@@ -138,11 +138,11 @@ class RewardsCfg:
         params={
             "threshold": 0.98,
             "gear_ratio": {
-                "torso_joint": 88.0,       
-                ".*_hip_.*": 88.0,         
-                ".*_knee_joint": 139.0,    
-                ".*_ankle_.*": 40.0,       
-                ".*_shoulder_.*": 21.0,  
+                "torso_joint": 88.0,
+                ".*_hip_.*": 88.0,
+                ".*_knee_joint": 139.0,
+                ".*_ankle_.*": 40.0,
+                ".*_shoulder_.*": 21.0,
                 ".*_elbow_.*": 21.0,
             },
         },
@@ -156,7 +156,7 @@ class RewardsCfg:
     energy_legs = RewTerm(
         func=mdp.energy_consumption_legs,
         weight=-0.001,
-        params={"joints": {"knee": 2.8, "hip_yaw": 2.0}},
+        params={"joints": {"knee": 3.2}},
     )
 
     joule_heating = RewTerm(
@@ -214,15 +214,6 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]),
         },
     )
-
-    # feet_impact_penalty = RewTerm(
-    #     func=mdp.feet_contact_limit, 
-    #     weight=-0.001,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_ankle_roll_link", "right_ankle_roll_link"]), 
-    #         "max_force": 600.0,
-    #     },
-    # )
 
     # Joint penetration penalty
     body_collision = RewTerm(

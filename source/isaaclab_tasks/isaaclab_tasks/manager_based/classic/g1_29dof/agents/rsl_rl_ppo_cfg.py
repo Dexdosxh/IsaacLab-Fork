@@ -12,7 +12,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 class G1_29DOFPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     rewards_expect = {
         "progress": 0.82,
-        "energy_legs": [-0.08, -1.2],
+        # "energy_legs": [-0.08, -1.2],
     }
     gage_init_std = 0.5
     gage_min_std = 0.25

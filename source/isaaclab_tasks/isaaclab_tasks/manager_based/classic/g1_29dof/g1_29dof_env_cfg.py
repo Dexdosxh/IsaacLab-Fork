@@ -37,11 +37,34 @@ class MySceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
 
-    # G1_29DOF_CFG has a hardcoded prim_path and disabled contact sensors — override both.
+    # G1_29DOF_CFG has a hardcoded prim_path, disabled contact sensors, a 90°
+    # spawn rotation, and a manipulation default pose — override everything.
     robot: ArticulationCfg = G1_29DOF_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    robot.spawn.activate_contact_sensors = True
-    # Override the 90° Z-rotation from the locomanipulation preset — we want the robot upright.
-    robot.init_state.rot = (1.0, 0.0, 0.0, 0.0)
+    robot.spawn = robot.spawn.replace(activate_contact_sensors=True)
+    robot.init_state = robot.init_state.replace(
+        rot=(1.0, 0.0, 0.0, 0.0),
+        joint_pos={
+            # Legs — feet directly under hips, slight bend
+            ".*_hip_yaw_joint": 0.0,
+            ".*_hip_roll_joint": 0.0,
+            ".*_hip_pitch_joint": -0.10,
+            ".*_knee_joint": 0.30,
+            ".*_ankle_pitch_joint": -0.20,
+            ".*_ankle_roll_joint": 0.0,
+            # Waist — straight
+            "waist_yaw_joint": 0.0,
+            "waist_roll_joint": 0.0,
+            "waist_pitch_joint": 0.0,
+            # Arms — natural walking stance: shoulders slightly forward, elbows bent
+            "left_shoulder_pitch_joint": 0.35,
+            "right_shoulder_pitch_joint": 0.35,
+            "left_shoulder_roll_joint": 0.16,
+            "right_shoulder_roll_joint": -0.16,
+            ".*_shoulder_yaw_joint": 0.0,
+            ".*_elbow_joint": 0.87,
+            ".*_wrist_.*_joint": 0.0,
+        },
+    )
 
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*_ankle_roll_link",
@@ -137,6 +160,17 @@ _GEAR_RATIOS = {
     ".*_wrist_.*": 21.0,
 }
 
+# Finger joints are excluded from all gear-ratio-based penalties.
+_EXCLUDE_FINGERS = [".*_index_.*", ".*_middle_.*", ".*_thumb_.*"]
+
+# Joule heating only makes sense for leg/waist motors (DCMotorCfg).
+# Arm joints use ImplicitActuatorCfg with stiffness=3000 — any positional error or
+# random action produces ~750 Nm, which in (τ/gear_scaled)^2 gives ~25M per joint.
+_EXCLUDE_FROM_JOULE_HEATING = [
+    ".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_.*",
+    ".*_index_.*", ".*_middle_.*", ".*_thumb_.*",
+]
+
 
 @configclass
 class RewardsCfg:
@@ -152,33 +186,38 @@ class RewardsCfg:
     joint_pos_limits = RewTerm(
         func=mdp.joint_pos_limits_penalty_ratio,
         weight=-0.25,
-        params={"threshold": 0.98, "gear_ratio": _GEAR_RATIOS},
+        params={"threshold": 0.98, "gear_ratio": _GEAR_RATIOS, "exclude_joints": _EXCLUDE_FINGERS},
     )
 
     # --- ENERGY divided ---
-    energy_arms = RewTerm(func=mdp.energy_consumption_arms, weight=-0.001)
-    energy_torso = RewTerm(func=mdp.energy_consumption_torso, weight=-0.001)
+    # Weights reduced vs G1-minimal: DCMotorCfg legs + stiffness-3000 arms produce
+    # much larger raw torques, so the same weight would dominate over progress.
+    energy_arms = RewTerm(func=mdp.energy_consumption_arms, weight=-0.0001)
+    energy_torso = RewTerm(func=mdp.energy_consumption_torso, weight=-0.0002)
     energy_legs = RewTerm(
         func=mdp.energy_consumption_legs,
-        weight=-0.001,
+        weight=-0.0003,
         params={"joints": {"knee": 2.8, "hip_yaw": 2.0}},
     )
 
+    # Arms excluded: ImplicitActuatorCfg stiffness-3000 joints produce (τ/0.15)^2 ~ 25M
+    # per shoulder with a random policy action, making the penalty untrainable.
     joule_heating = RewTerm(
         func=mdp.joule_heating_energy,
-        weight=-0.00001,
-        params={"gear_ratio": _GEAR_RATIOS},
+        weight=-0.000005,
+        params={"gear_ratio": _GEAR_RATIOS, "exclude_joints": _EXCLUDE_FROM_JOULE_HEATING},
     )
 
     # --- TORQUE / FATIGUE ---
     per_joint_fatigue = RewTerm(
         func=mdp.joint_torque_fatigue_penalty_per_joint_uniform,
-        weight=-0.01,
+        weight=-0.003,
         params={
             "exponent": 2,
             "buildup_rate": 1.0,
             "recovery_rate": 0.5,
             "tau_max": _GEAR_RATIOS,
+            "exclude_joints": _EXCLUDE_FINGERS,
         },
     )
 
